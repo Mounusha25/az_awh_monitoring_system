@@ -17,6 +17,73 @@ class AWHControlPanel(tk.Tk):
 
         self._build_layout()
 
+        # UI state flags
+        self._is_validated = False
+        self._is_running = False
+
+        # Initialize button states
+        self._update_button_states()
+
+    def _update_button_states(self):
+        """Enable/disable buttons based on UI state."""
+        if self._is_running:
+            # When running: only Stop is enabled
+            self.validate_btn.config(state="disabled")
+            self.start_btn.config(state="disabled")
+            self.stop_btn.config(state="normal")
+        else:
+            # When not running
+            self.validate_btn.config(state="normal")
+            self.stop_btn.config(state="disabled")
+            self.start_btn.config(
+                state="normal" if self._is_validated else "disabled"
+            )
+
+    def _on_validate(self):
+        """Validate current configuration."""
+        self._is_validated = True
+        self.config_status.config(
+            text="Configuration Status: VALIDATED 🟡"
+        )
+        self._update_button_states()
+
+    def _on_start(self):
+        """Start acquisition (UI state only)."""
+        if not self._is_validated:
+            return  # safety guard
+
+        self._is_running = True
+
+        # Update UI state
+        self.system_status_label.config(text="Status: RUNNING 🟢")
+        self.config_status.config(text="Configuration Status: LOCKED 🟢")
+        self.lock_label.config(text="Config Lock: ON")
+
+        # Disable all config inputs
+        self.sensor_interval.config(state="disabled")
+        self.file_interval.config(state="disabled")
+        self.weight_threshold.config(state="disabled")
+        self.pump_duration.config(state="disabled")
+
+        self._update_button_states()
+
+    def _on_stop(self):
+        """Stop acquisition (UI state only)."""
+        self._is_running = False
+
+        # Update UI state
+        self.system_status_label.config(text="Status: STOPPED 🔴")
+        self.config_status.config(text="Configuration Status: VALIDATED 🟡")
+        self.lock_label.config(text="Config Lock: OFF")
+
+        # Re-enable config inputs
+        self.sensor_interval.config(state="readonly")
+        self.file_interval.config(state="readonly")
+        self.weight_threshold.config(state="readonly")
+        self.pump_duration.config(state="readonly")
+
+        self._update_button_states()
+
     def _build_layout(self):
         """Build scrollable layout infrastructure."""
         container = ttk.Frame(self)
@@ -131,9 +198,23 @@ class AWHControlPanel(tk.Tk):
         )
         ctrl.pack(fill="x", padx=10, pady=10)
 
-        self.validate_btn = ttk.Button(ctrl, text="Validate Configuration")
-        self.start_btn = ttk.Button(ctrl, text="Start Acquisition", state="disabled")
-        self.stop_btn = ttk.Button(ctrl, text="Stop Acquisition", state="disabled")
+        self.validate_btn = ttk.Button(
+            ctrl,
+            text="Validate Configuration",
+            command=self._on_validate
+        )
+        self.start_btn = ttk.Button(
+            ctrl,
+            text="Start Acquisition",
+            state="disabled",
+            command=self._on_start
+        )
+        self.stop_btn = ttk.Button(
+            ctrl,
+            text="Stop Acquisition",
+            state="disabled",
+            command=self._on_stop
+        )
 
         self.validate_btn.pack(pady=5)
         self.start_btn.pack(pady=5)
