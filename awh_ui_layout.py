@@ -55,7 +55,7 @@ class AWHControlPanel(tk.Tk):
         self._is_running = True
 
         # Update UI state
-        self.system_status_label.config(text="Status: RUNNING 🟢")
+        self.system_status_label.config(text="RUNNING 🟢", foreground="green")
         self.config_status.config(text="Configuration Status: LOCKED 🟢")
         self.lock_label.config(text="Config Lock: ON")
 
@@ -72,7 +72,7 @@ class AWHControlPanel(tk.Tk):
         self._is_running = False
 
         # Update UI state
-        self.system_status_label.config(text="Status: STOPPED 🔴")
+        self.system_status_label.config(text="STOPPED 🔴", foreground="red")
         self.config_status.config(text="Configuration Status: VALIDATED 🟡")
         self.lock_label.config(text="Config Lock: OFF")
 
@@ -98,11 +98,29 @@ class AWHControlPanel(tk.Tk):
             lambda e: self.canvas.configure(scrollregion=self.canvas.bbox("all"))
         )
 
-        self.canvas.create_window((0, 0), window=self.scrollable_frame, anchor="nw")
+        self.canvas_window = self.canvas.create_window(
+            (0, 0),
+            window=self.scrollable_frame,
+            anchor="nw"
+        )
+
+        # Force embedded frame to always match canvas width
+        self.canvas.bind(
+            "<Configure>",
+            lambda e: self.canvas.itemconfig(
+                self.canvas_window, width=e.width
+            )
+        )
+
         self.canvas.configure(yscrollcommand=scrollbar.set)
 
         self.canvas.pack(side="left", fill="both", expand=True)
         scrollbar.pack(side="right", fill="y")
+
+        # Centered content wrapper
+        self.content = ttk.Frame(self.scrollable_frame)
+        self.content.pack(fill="x", expand=True)
+        self.content.columnconfigure(0, weight=1)
 
         self._build_header()
         self._build_configuration()
@@ -111,77 +129,106 @@ class AWHControlPanel(tk.Tk):
 
     def _build_header(self):
         """Build header section (visual only)."""
-        frame = ttk.Frame(self.scrollable_frame, padding=10)
-        frame.pack(fill="x")
+        frame = ttk.Frame(self.content, padding=10)
+        frame.pack(fill="x", padx=40)
+
+        frame.columnconfigure(0, weight=1)
+        frame.columnconfigure(1, weight=0)
+
+        # LEFT: Station title + subtitle
+        left_title = ttk.Frame(frame)
+        left_title.grid(row=0, column=0, sticky="w")
 
         ttk.Label(
-            frame,
+            left_title,
             text="AWH Station Control Panel",
-            font=("Helvetica", 16, "bold")
+            font=("Helvetica", 16, "bold"),
+            justify="left"
         ).pack(anchor="w")
 
-        self.system_status_label = ttk.Label(
-            frame,
-            text="Status: STOPPED 🔴",
-            font=("Helvetica", 11)
-        )
-        self.system_status_label.pack(anchor="w")
+        ttk.Label(
+            left_title,
+            text="Station: AquaPars #2 @ Power Station, Tempe",
+            font=("Helvetica", 12),
+            justify="left"
+        ).pack(anchor="w")
 
-        self.time_label = ttk.Label(frame, text="")
-        self.time_label.pack(anchor="w")
+        # RIGHT: Status + time
+        right = ttk.Frame(frame)
+        right.grid(row=0, column=1, sticky="e")
+
+        self.system_status_label = ttk.Label(
+            right,
+            text="STOPPED 🔴",
+            font=("Helvetica", 14, "bold"),
+            foreground="red"
+        )
+        self.system_status_label.pack(anchor="e")
+
+        self.time_label = ttk.Label(
+            right,
+            text=datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        )
+        self.time_label.pack(anchor="e")
 
     def _build_configuration(self):
         """Build configuration section (layout only)."""
         cfg = ttk.LabelFrame(
-            self.scrollable_frame,
+            self.content,
             text="Configuration (Before Start)",
             padding=10
         )
-        cfg.pack(fill="x", padx=10, pady=10)
+        cfg.pack(fill="x", padx=40, pady=10)
 
         # Sampling Settings
         sampling = ttk.LabelFrame(cfg, text="Sampling Settings", padding=10)
         sampling.pack(fill="x", pady=5)
+        sampling.columnconfigure(1, weight=1)
 
         ttk.Label(sampling, text="Sensor Interval").grid(row=0, column=0, sticky="w")
         self.sensor_interval = ttk.Combobox(
             sampling,
             values=["1 s", "2 s", "5 s", "10 s", "30 s"],
-            state="readonly"
+            state="readonly",
+            width=12
         )
         self.sensor_interval.set("10 s")
-        self.sensor_interval.grid(row=0, column=1, padx=10)
+        self.sensor_interval.grid(row=0, column=1, padx=10, sticky="w")
 
         ttk.Label(sampling, text="File Interval").grid(row=1, column=0, sticky="w")
         self.file_interval = ttk.Combobox(
             sampling,
             values=["1 hr", "2 hr", "4 hr", "6 hr"],
-            state="readonly"
+            state="readonly",
+            width=12
         )
         self.file_interval.set("1 hr")
-        self.file_interval.grid(row=1, column=1, padx=10)
+        self.file_interval.grid(row=1, column=1, padx=10, sticky="w")
 
         # Pump Automation
         pump = ttk.LabelFrame(cfg, text="Pump Automation", padding=10)
         pump.pack(fill="x", pady=5)
+        pump.columnconfigure(1, weight=1)
 
         ttk.Label(pump, text="Weight Threshold").grid(row=0, column=0, sticky="w")
         self.weight_threshold = ttk.Combobox(
             pump,
             values=["1000 g", "1500 g", "2000 g", "3000 g"],
-            state="readonly"
+            state="readonly",
+            width=14
         )
         self.weight_threshold.set("2000 g")
-        self.weight_threshold.grid(row=0, column=1, padx=10)
+        self.weight_threshold.grid(row=0, column=1, padx=10, sticky="w")
 
         ttk.Label(pump, text="Pump Duration").grid(row=1, column=0, sticky="w")
         self.pump_duration = ttk.Combobox(
             pump,
             values=["1 min", "2 min", "3 min", "4 min", "5 min"],
-            state="readonly"
+            state="readonly",
+            width=12
         )
         self.pump_duration.set("2 min")
-        self.pump_duration.grid(row=1, column=1, padx=10)
+        self.pump_duration.grid(row=1, column=1, padx=10, sticky="w")
 
         self.config_status = ttk.Label(
             cfg,
@@ -192,11 +239,11 @@ class AWHControlPanel(tk.Tk):
     def _build_controls(self):
         """Build controls section (buttons only)."""
         ctrl = ttk.LabelFrame(
-            self.scrollable_frame,
+            self.content,
             text="System Control",
             padding=10
         )
-        ctrl.pack(fill="x", padx=10, pady=10)
+        ctrl.pack(fill="x", padx=40, pady=10)
 
         self.validate_btn = ttk.Button(
             ctrl,
@@ -226,23 +273,41 @@ class AWHControlPanel(tk.Tk):
     def _build_status(self):
         """Build status section (read-only)."""
         status = ttk.LabelFrame(
-            self.scrollable_frame,
+            self.content,
             text="System Status",
             padding=10
         )
-        status.pack(fill="x", padx=10, pady=10)
+        status.pack(fill="x", padx=40, pady=10)
 
-        self.runtime_label = ttk.Label(status, text="Runtime: 00:00:00")
+        status.columnconfigure(0, weight=1)
+        status.columnconfigure(1, weight=0)
+
+        # LEFT: Status info
+        left = ttk.Frame(status)
+        left.grid(row=0, column=0, sticky="w")
+
+        self.runtime_label = ttk.Label(left, text="Runtime: 00:00:00")
         self.runtime_label.pack(anchor="w")
 
-        self.pump_status_label = ttk.Label(status, text="Pump Status: OFF")
+        self.pump_status_label = ttk.Label(left, text="Pump Status: OFF")
         self.pump_status_label.pack(anchor="w")
 
-        self.csv_status_label = ttk.Label(status, text="CSV Logging: Inactive")
+        self.csv_status_label = ttk.Label(left, text="CSV Logging: Inactive")
         self.csv_status_label.pack(anchor="w")
 
-        self.cloud_status_label = ttk.Label(status, text="Cloud Upload: N/A")
+        self.cloud_status_label = ttk.Label(left, text="Cloud Upload: N/A")
         self.cloud_status_label.pack(anchor="w")
+
+        # RIGHT: Sensor health
+        right = ttk.Frame(status)
+        right.grid(row=0, column=1, sticky="e", padx=30)
+
+        ttk.Label(right, text="Sensor Health", font=("Helvetica", 12, "bold")).pack(anchor="w")
+
+        for sensor in [
+            "Balance", "Power", "Flow", "Intake Air", "Outtake Air"
+        ]:
+            ttk.Label(right, text=f"{sensor}: ✔").pack(anchor="w")
 
 
 if __name__ == "__main__":

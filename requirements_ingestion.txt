@@ -2,7 +2,7 @@
 # Production dependencies for cloud deployment
 
 # Database
-psycopg2-binary==2.9.9
+psycopg2-binary>=2.9.9  # Fixed: Use compatible version for Python 3.14
 
 # Firebase
 firebase-admin==6.2.0

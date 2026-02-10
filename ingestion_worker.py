@@ -47,13 +47,24 @@ MAX_RETRIES = int(os.getenv("MAX_RETRIES", "5"))
 # Logging Setup
 # ============================================
 
+# Determine log file location (prefer /var/log, fallback to home dir)
+log_file = os.getenv(
+    "LOG_FILE",
+    "/var/log/awh-ingestion.log" if os.access("/var/log", os.W_OK) 
+    else os.path.expanduser("~/.awh-ingestion.log")
+)
+
+handlers = [logging.StreamHandler()]
+try:
+    handlers.append(logging.FileHandler(log_file))
+except (PermissionError, OSError):
+    logger_setup = logging.getLogger(__name__)
+    logger_setup.warning(f"Could not write to {log_file}, using stdout only")
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
-    handlers=[
-        logging.StreamHandler(),
-        logging.FileHandler("/var/log/awh-ingestion.log")
-    ]
+    handlers=handlers
 )
 logger = logging.getLogger(__name__)
 

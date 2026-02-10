@@ -26,7 +26,7 @@ from pump_controller import PumpController
 from read_balance import BalanceSerialReader, parse_balance_line
 from read_power import PowerMeterReader
 from read_flow import FlowMeterReader
-from ui_display import Application
+from awh_ui_layout import Application
 
 # ============================================
 # Configuration / Constants
