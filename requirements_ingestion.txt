@@ -1,0 +1,11 @@
+# Firebase → PostgreSQL Ingestion Worker
+# Production dependencies for cloud deployment
+
+# Database
+psycopg2-binary==2.9.9
+
+# Firebase
+firebase-admin==6.2.0
+
+# Utilities (optional but recommended)
+python-dotenv==1.0.0
