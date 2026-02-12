@@ -26,7 +26,7 @@ from pump_controller import PumpController
 from read_balance import BalanceSerialReader, parse_balance_line
 from read_power import PowerMeterReader
 from read_flow import FlowMeterReader
-from awh_ui_layout import Application
+from awh_ui_layout import AWHControlPanel
 
 # ============================================
 # Configuration / Constants
@@ -417,9 +417,12 @@ def main():
         pump=pump
     )
 
-    app = Application(balance_reader=controller)
-    controller.callback = app.update_data
-    controller.pump.set_status_callback(app.update_pump_status)
+    # Create UI (AWHControlPanel)
+    app = AWHControlPanel()
+    
+    # Connect the backend controller to UI updates
+    controller.callback = lambda data_str: app.update_status(data_str) if hasattr(app, 'update_status') else None
+    controller.pump.set_status_callback(lambda status: app.update_pump_status(status) if hasattr(app, 'update_pump_status') else None)
 
     app.mainloop()
     try:
