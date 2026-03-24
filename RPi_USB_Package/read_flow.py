@@ -3,6 +3,25 @@ import time
 import threading
 from gpiozero import Button
 
+
+def _free_gpio_pin(pin):
+    """Free a GPIO pin via lgpio in case a previous run left it claimed."""
+    try:
+        import lgpio
+    except ImportError:
+        return
+    for chip in (4, 0):
+        try:
+            h = lgpio.gpiochip_open(chip)
+            try:
+                lgpio.gpio_free(h, pin)
+            except Exception:
+                pass
+            lgpio.gpiochip_close(h)
+        except Exception:
+            pass
+
+
 class FlowMeterReader:
     """
     Reads pulse-output flow meter using gpiozero Button.
@@ -18,6 +37,9 @@ class FlowMeterReader:
         self._running = False
         self._thread = None
         self._pulse_count = 0
+
+        # Free the pin first in case a previous run left it claimed
+        _free_gpio_pin(pin)
 
         # Use pull_up=True for open-collector output
         self.sensor = Button(self.pin, pull_up=True)
