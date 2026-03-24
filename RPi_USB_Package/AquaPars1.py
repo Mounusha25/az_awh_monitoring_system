@@ -224,7 +224,9 @@ class BalanceReader:
             'Intake Air Temperature (°C)', 'Intake Air Velocity', 'Intake Air Humidity (%)',
             'Outtake Air Temperature (°C)', 'Outtake Air Velocity', 'Outtake Air Humidity (% )'
         ])
+        self.csv_file.flush()  # write header to disk immediately
         self.csv_files.append(file_path)
+        print(f"[CSV] New file created: {file_path}")
 
     # ---------- Lifecycle ----------
     def start_reading(self):
@@ -301,45 +303,62 @@ class BalanceReader:
         time_str = now.strftime('%H:%M:%S')
         op_time = self._operation_time_hms()
 
-        if self.balance_line and self.power_tuple and self.flow_tuple:
+        # --- Unpack each sensor independently; use None if not yet received ---
+        if self.balance_line:
             ST, GS, check, weight, unit = self.balance_line
-            V, A, W, Wh = self.power_tuple
-            flow_lmin, hz, total_liters = self.flow_tuple
-            t_in, v_in, h_in, v_unit_in = self.intake_air_data
-            t_out, v_out, h_out, v_unit_out = self.outtake_air_data
-            pump_status_bit = 1 if self.pump.is_on else 0
+        else:
+            ST, GS, check, weight, unit = None, None, None, None, None
+            print("[Save] WARNING: No balance data yet")
 
-            # Always write CSV (every second)
-            self.csv_writer.writerow([
+        if self.power_tuple:
+            V, A, W, Wh = self.power_tuple
+        else:
+            V, A, W, Wh = None, None, None, None
+            print("[Save] WARNING: No power meter data yet")
+
+        if self.flow_tuple:
+            flow_lmin, hz, total_liters = self.flow_tuple
+        else:
+            flow_lmin, hz, total_liters = None, None, None
+            print("[Save] WARNING: No flow meter data yet")
+
+        t_in, v_in, h_in, v_unit_in = self.intake_air_data
+        t_out, v_out, h_out, v_unit_out = self.outtake_air_data
+        pump_status_bit = 1 if self.pump.is_on else 0
+
+        # Always write CSV row (every second) regardless of which sensors have data
+        self.csv_writer.writerow([
+            date_str, time_str, ST, GS, check, weight, unit, pump_status_bit,
+            V, A, W, Wh, op_time,
+            flow_lmin, hz, total_liters,
+            t_in, f"{v_in} {v_unit_in}" if v_in is not None else None, h_in,
+            t_out, f"{v_out} {v_unit_out}" if v_out is not None else None, h_out
+        ])
+        self.csv_file.flush()  # immediately write buffer to disk
+
+        # Throttled cloud upload (every CLOUD_UPLOAD_EVERY_SEC)
+        if (now_ts - self._last_cloud_upload_ts) >= self.cloud_upload_interval_secs:
+            send_to_cloud(STATION_NAME, {
+                "temperature": t_in, "humidity": h_in, "velocity": v_in, "unit": v_unit_in,
+                "outtake_temperature": t_out, "outtake_humidity": h_out, "outtake_velocity": v_out, "outtake_unit": v_unit_out,
+                "voltage": V, "current": A, "power": W, "energy": Wh,
+                "weight": weight, "pump_status": pump_status_bit,
+                "flow_lmin": flow_lmin, "flow_hz": hz, "flow_total": total_liters
+            })
+            self._last_cloud_upload_ts = now_ts
+
+        # Update UI every second
+        if self.callback:
+            self.callback(",".join(map(str, [
                 date_str, time_str, ST, GS, check, weight, unit, pump_status_bit,
                 V, A, W, Wh, op_time,
                 flow_lmin, hz, total_liters,
-                t_in, f"{v_in} {v_unit_in}" if v_in is not None else None, h_in,
-                t_out, f"{v_out} {v_unit_out}" if v_out is not None else None, h_out
-            ])
-
-            # Throttled cloud upload (every CLOUD_UPLOAD_EVERY_SEC)
-            if (now_ts - self._last_cloud_upload_ts) >= self.cloud_upload_interval_secs:
-                send_to_cloud(STATION_NAME, {
-                    "temperature": t_in, "humidity": h_in, "velocity": v_in, "unit": v_unit_in,
-                    "outtake_temperature": t_out, "outtake_humidity": h_out, "outtake_velocity": v_out, "outtake_unit": v_unit_out,
-                    "voltage": V, "current": A, "power": W, "energy": Wh,
-                    "weight": weight, "pump_status": pump_status_bit,
-                    "flow_lmin": flow_lmin, "flow_hz": hz, "flow_total": total_liters
-                })
-                self._last_cloud_upload_ts = now_ts
-
-            # Update UI every second
-            if self.callback:
-                self.callback(",".join(map(str, [
-                    date_str, time_str, ST, GS, check, weight, unit, pump_status_bit,
-                    V, A, W, Wh, op_time,
-                    flow_lmin, hz, total_liters,
-                    t_in, v_in, h_in, v_unit_in,
-                    t_out, v_out, h_out, v_unit_out
-                ])))
+                t_in, v_in, h_in, v_unit_in,
+                t_out, v_out, h_out, v_unit_out
+            ])))
 
     def save_data_to_csv_interval(self):
+        print("[CSV] Save loop started — writing every 1 second.")
         while self.running:
             current_time = datetime.now()
             if current_time - self.last_file_time >= timedelta(minutes=self.file_saving_interval_minutes):

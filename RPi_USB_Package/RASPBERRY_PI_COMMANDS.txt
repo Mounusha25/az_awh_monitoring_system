@@ -1,0 +1,164 @@
+===============================================
+RASPBERRY PI - COMMAND CHECKLIST
+===============================================
+
+After copying RPi_USB_Package to Raspberry Pi, run these commands:
+
+===============================================
+STEP 1: PREFLIGHT CHECK (Run Once)
+===============================================
+
+# Check all prerequisites in one command block:
+cd ~/RPi_USB_Package && \
+echo "=== Checking USB Devices ===" && \
+lsusb && \
+echo "" && \
+echo "=== Checking Serial Ports ===" && \
+ls -la /dev/ttyUSB* /dev/ttyACM* 2>/dev/null || echo "No serial devices found!" && \
+echo "" && \
+echo "=== Checking Python Packages ===" && \
+python3 -c "import serial; print('✓ pyserial installed')" 2>/dev/null || echo "✗ pyserial missing" && \
+python3 -c "import requests; print('✓ requests installed')" 2>/dev/null || echo "✗ requests missing" && \
+python3 -c "import RPi.GPIO; print('✓ RPi.GPIO installed')" 2>/dev/null || echo "✗ RPi.GPIO missing" && \
+echo "" && \
+echo "=== Checking Internet ===" && \
+ping -c 2 google.com && \
+echo "" && \
+echo "=== Checking Folder ===" && \
+pwd
+
+# If any package is missing, install:
+pip3 install requests pyserial RPi.GPIO
+
+# If serial permission denied, add user to dialout group:
+sudo usermod -a -G dialout $USER
+# Then reboot: sudo reboot
+
+===============================================
+STEP 2: TEST INDIVIDUAL SENSORS
+===============================================
+
+cd ~/RPi_USB_Package/test_system
+
+# Test each sensor (Ctrl+C to stop each test):
+
+python3 test_balance.py
+# Expected: Weight readings like "125.5 g"
+
+python3 test_powermeter.py
+# Expected: Voltage, Current, Power, Energy
+
+python3 test_flow.py
+# Expected: Flow rate in L/min
+
+python3 test_intake_anememoter.py
+# Expected: Temperature, Humidity, Velocity
+
+python3 test_outtaketake_anememoter.py
+# Expected: Temperature, Humidity, Velocity
+
+python3 test_pump.py
+# Expected: Pump turns ON/OFF
+
+===============================================
+STEP 3: RUN FULL SYSTEM WITH UI
+===============================================
+
+cd ~/RPi_USB_Package
+
+# Run the main program:
+python3 AquaPars1.py
+
+# If you get GPIO permission error, use sudo:
+sudo python3 AquaPars1.py
+
+# Control panel window will open
+# Click: Validate Configuration
+# Click: Start Acquisition
+# Watch status change to RUNNING 🟢
+
+===============================================
+STEP 4: VERIFY DATA IS SAVING
+===============================================
+
+# Open a NEW terminal window and run:
+
+cd ~/RPi_USB_Package
+
+# Check CSV files are being created:
+ls -lth measure_data/
+
+# Watch live CSV data (Ctrl+C to stop):
+tail -f measure_data/*_measure_data.csv
+
+# You should see new rows appearing every second
+
+===============================================
+STEP 5: VERIFY CLOUD UPLOAD
+===============================================
+
+# In the terminal running AquaPars1.py, look for:
+[Cloud Upload] 200: ...
+
+# 200 = Success
+# 4xx/5xx = Error (check internet or URL)
+# No message = Not uploading (wait 60 seconds for first upload)
+
+===============================================
+STEP 6: STOP THE SYSTEM
+===============================================
+
+# In the control panel UI:
+# Click: Stop Acquisition
+
+# Or press Ctrl+C in the terminal
+
+===============================================
+TROUBLESHOOTING
+===============================================
+
+Problem: "No module named 'serial'"
+Solution: pip3 install pyserial
+
+Problem: "Permission denied: /dev/ttyUSB0"
+Solution: sudo usermod -a -G dialout $USER
+         sudo reboot
+
+Problem: "Permission denied: GPIO"
+Solution: Run with sudo: sudo python3 AquaPars1.py
+
+Problem: Control panel opens but no CSV files created
+Solution: Make sure you clicked "Validate" then "Start"
+         Check terminal for error messages
+
+Problem: Cloud upload fails
+Solution: Check internet: ping google.com
+         Check URL is reachable: curl -I https://us-central1-awh-project-460421.cloudfunctions.net/receive_data
+
+Problem: Sensor tests work but main program doesn't read sensors
+Solution: You may have wrong USB device mapping
+         Check /dev/ttyUSB* order matches what code expects
+
+===============================================
+ONE-LINE QUICK START (After preflight passes)
+===============================================
+
+cd ~/RPi_USB_Package && python3 AquaPars1.py
+
+# Then in UI: Validate → Start
+
+===============================================
+EXPECTED CONSOLE OUTPUT (Normal Operation)
+===============================================
+
+[Watchdog] Balance reader started.
+[Watchdog] Power reader started.
+[Watchdog] Flow reader started.
+Weight: 125.5g
+Power: 12.5V, 0.8A, 10.0W
+Flow: 2.3 L/min
+[Cloud Upload] 200: {"status":"success"}
+[Cloud Upload] 200: {"status":"success"}
+...
+
+===============================================

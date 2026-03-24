@@ -1,14 +1,38 @@
-# pump_controller.py (RPi.GPIO version)
+# pump_controller.py (gpiozero version — works on RPi 4 and RPi 5)
 import threading
 import time
-import RPi.GPIO as GPIO
+from gpiozero import OutputDevice
+
+
+def _free_gpio_pin(pin):
+    """
+    Force-free a GPIO pin via lgpio so that gpiozero can claim it.
+    Handles both RPi 5 (gpiochip4) and RPi 4 (gpiochip0).
+    Silently ignores errors if the pin is already free or lgpio is absent.
+    """
+    try:
+        import lgpio
+    except ImportError:
+        return  # lgpio not installed — nothing to free
+
+    for chip in (4, 0):          # RPi 5 first, then RPi 4
+        try:
+            h = lgpio.gpiochip_open(chip)
+            try:
+                lgpio.gpio_free(h, pin)
+                print(f"[Pump] Freed GPIO{pin} on gpiochip{chip}")
+            except Exception:
+                pass             # pin was not claimed — fine
+            lgpio.gpiochip_close(h)
+        except Exception:
+            pass                 # chip doesn't exist on this board
+
 
 class PumpController:
     """
-    GPIO pump control compatible with Raspberry Pi 5 / Bookworm.
-    Uses RPi.GPIO (already included).
-    
-    API is compatible with your previous version:
+    GPIO pump control using gpiozero — compatible with RPi 4 and RPi 5 / Bookworm.
+
+    API:
       - set_threshold(), set_duration(), set_status_callback()
       - auto_check(weight), manual_on(), manual_off(), is_on, cleanup()
     """
@@ -25,12 +49,13 @@ class PumpController:
 
         self.threshold_g = float(initial_threshold_g)
         self.duration_min = float(default_duration_min)
-        self.active_high = active_high
 
-        # Setup GPIO
-        GPIO.setmode(GPIO.BCM)
-        GPIO.setup(self.pin, GPIO.OUT)
-        GPIO.output(self.pin, GPIO.LOW if self.active_high else GPIO.HIGH)
+        # Free the pin first in case a previous run left it claimed ("GPIO busy")
+        _free_gpio_pin(pin)
+
+        # Setup GPIO via gpiozero (works on RPi 4 and RPi 5)
+        self._device = OutputDevice(pin, active_high=active_high, initial_value=False)
+        print(f"[Pump] GPIO pin {pin} initialised via gpiozero.")
 
     # ------------------ Properties ------------------
     @property
@@ -92,7 +117,7 @@ class PumpController:
     # ------------------ Low-level control ------------------
     def _turn_on(self):
         with self._lock:
-            GPIO.output(self.pin, GPIO.HIGH if self.active_high else GPIO.LOW)
+            self._device.on()
             self._is_on = True
         if self._status_callback:
             try:
@@ -103,7 +128,7 @@ class PumpController:
 
     def _turn_off(self):
         with self._lock:
-            GPIO.output(self.pin, GPIO.LOW if self.active_high else GPIO.HIGH)
+            self._device.off()
             self._is_on = False
             if self._timer_thread and self._timer_thread.is_alive():
                 self._stop_event.set()
@@ -119,5 +144,5 @@ class PumpController:
         try:
             self._turn_off()
         finally:
-            GPIO.cleanup(self.pin)
+            self._device.close()
             print("[Pump] GPIO cleaned up")
