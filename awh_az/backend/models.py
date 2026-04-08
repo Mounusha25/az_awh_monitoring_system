@@ -10,7 +10,7 @@ class StationReading(BaseModel):
     """
     station_name: str
     timestamp: datetime
-    unit: str
+    unit: Optional[str] = None
     
     # Intake Air Parameters
     temperature: Optional[float] = None
@@ -21,10 +21,12 @@ class StationReading(BaseModel):
     outtake_unit: Optional[str] = None
     outtake_humidity: Optional[float] = None
     outtake_velocity: Optional[float] = None
+    outtake_temperature: Optional[float] = None
     
     # Water Production Parameters
     flow_lmin: Optional[float] = None
     flow_hz: Optional[float] = None
+    flow_total: Optional[float] = None
     weight: Optional[float] = None
     
     # Power Parameters
@@ -34,7 +36,7 @@ class StationReading(BaseModel):
     energy: Optional[float] = None
     
     # System Status
-    pump_status: Optional[str] = None
+    pump_status: Optional[Any] = None  # Can be int (0/1) or string ("ON"/"OFF")
     
     class Config:
         json_schema_extra = {

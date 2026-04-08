@@ -10,29 +10,23 @@ This index helps you navigate all project documentation and code.
 
 **New to the project?** Start here:
 
-1. **[PROJECT_DASHBOARD.md](PROJECT_DASHBOARD.md)** - Visual overview of everything (start here!)
-2. **[MANIFEST.md](MANIFEST.md)** - Complete project inventory and checklist
-3. **[INGESTION_README.md](INGESTION_README.md)** - Complete user guide
+1. **[STATUS_REPORT.md](STATUS_REPORT.md)** - System overview and readiness status
+2. **[INGESTION_README.md](INGESTION_README.md)** - Cloud ingestion user guide
+3. **[UI_GUIDE.md](UI_GUIDE.md)** - Tkinter control panel guide
 
 ---
 
 ## 📚 Documentation by Purpose
 
-### For Project Managers
-- **[PROJECT_DASHBOARD.md](PROJECT_DASHBOARD.md)** - Visual status and metrics
-- **[MANIFEST.md](MANIFEST.md)** - Complete inventory and checklist
-- **[IMPLEMENTATION_SUMMARY.txt](IMPLEMENTATION_SUMMARY.txt)** - Executive overview
-
 ### For Developers
 - **[INGESTION_README.md](INGESTION_README.md)** - User guide and architecture
 - **[ARCHITECTURE.md](ARCHITECTURE.md)** - System design with diagrams
-- **[ingestion_worker.py](ingestion_worker.py)** - Core implementation (60+ comments)
-- **[test_ingestion_worker.py](test_ingestion_worker.py)** - Test suite with examples
+- **[UI_GUIDE.md](UI_GUIDE.md)** - Full UI usage guide
+- **[UI_QUICKREF.md](UI_QUICKREF.md)** - UI quick reference card
 
 ### For Operations
 - **[DEPLOYMENT_GUIDE.md](DEPLOYMENT_GUIDE.md)** - Production setup and deployment
 - **[QUICK_REFERENCE.md](QUICK_REFERENCE.md)** - Commands and operational procedures
-- **[schema_timescaledb.sql](schema_timescaledb.sql)** - Database schema
 
 ### For Troubleshooting
 - **[DEPLOYMENT_GUIDE.md](DEPLOYMENT_GUIDE.md)** - Section 5: Troubleshooting (10+ issues)
@@ -43,64 +37,42 @@ This index helps you navigate all project documentation and code.
 
 ## 📁 File Structure
 
-### Core Implementation Files
+### Root-Level Files (Cloud Ingestion)
 ```
-📄 ingestion_worker.py (479 lines)
-   └─ Production-grade worker with 5 core classes
-   └─ CheckpointManager, FirebaseClient, StationManager, MeasurementInserter, IngestionWorker
-
-📄 schema_timescaledb.sql (115 lines)
-   └─ Database schema for PostgreSQL + TimescaleDB
-   └─ stations table, measurements hypertable, compression policies
-
-📄 test_ingestion_worker.py (283 lines)
-   └─ Comprehensive test suite (100% passing)
-   └─ Checkpoint, station cache, retry logic, idempotency tests
-
-📄 requirements_ingestion.txt (11 lines)
-   └─ Python dependencies (psycopg2, firebase-admin, python-dotenv)
+📄 ingestion_worker.py       — Firebase → PostgreSQL ingestion worker
+📄 test_ingestion_worker.py  — Test suite for ingestion worker
+📄 verify_setup.py           — Setup verification script
+📄 read_env_anemometer.py    — Environment anemometer reader
+📄 prepare_for_rpi.sh        — RPi setup script
+📄 requirements_ingestion.txt— Python dependencies
+📄 schema_timescaledb.sql    — TimescaleDB schema
+📄 schema_postgresql_simple.sql — Simple PostgreSQL schema
 ```
 
-### Documentation Files
+### RPi_USB_Package/ (Edge Device — runs on Raspberry Pi)
 ```
-📘 INGESTION_README.md (8.7 KB)
-   └─ Complete user guide with configuration reference
-
-📘 DEPLOYMENT_GUIDE.md (7.0 KB)
-   └─ Systemd and Cloud Run deployment procedures
-
-📘 QUICK_REFERENCE.md (4.0 KB)
-   └─ Operational commands and monitoring queries
-
-📘 ARCHITECTURE.md (519 lines)
-   └─ System design, diagrams, data flow, scaling strategy
-
-📘 IMPLEMENTATION_SUMMARY.txt (500+ lines)
-   └─ Executive overview and next steps
-
-📘 COMPLETION_CHECKLIST.md
-   └─ Phase-by-phase status verification
-
-📘 STATUS_REPORT.md
-   └─ Detailed system readiness assessment
-
-📘 PROJECT_DASHBOARD.md
-   └─ Visual overview with metrics
-
-📘 MANIFEST.md
-   └─ Complete project inventory
-
-📘 INDEX.md
-   └─ This file (navigation guide)
+📄 AquaPars1.py              — Main controller (run this on the RPi)
+📄 awh_ui_layout.py          — Tkinter control panel UI
+📄 pump_controller.py        — GPIO pump control (gpiozero, RPi 4 & 5)
+📄 read_balance.py           — Serial balance reader (auto-detect)
+📄 read_power.py             — Modbus power meter reader
+📄 read_flow.py              — Pulse flow meter reader (gpiozero)
+📄 intake_anemometer.py      — Intake anemometer decoder
+📄 outtake_anemometer.py     — Outtake anemometer decoder
+📄 sim_run_on_mac.py         — Mac simulation (no hardware needed)
+📄 test_system/              — Hardware test scripts
 ```
 
-### UI System Files
+### Documentation (guides/)
 ```
-📄 awh_ui_layout.py (258 lines)
-   └─ Professional Tkinter control panel with state machine
-
-📄 AquaPars1.py
-   └─ Integration point with new UI
+📘 INDEX.md                  — This file (navigation guide)
+📘 STATUS_REPORT.md          — System readiness assessment
+📘 INGESTION_README.md       — Cloud ingestion user guide
+📘 DEPLOYMENT_GUIDE.md       — Production deployment
+📘 QUICK_REFERENCE.md        — Operational commands
+📘 ARCHITECTURE.md           — System design & diagrams
+📘 UI_GUIDE.md               — UI usage guide
+📘 UI_QUICKREF.md            — UI quick reference card
 ```
 
 ---
@@ -108,7 +80,7 @@ This index helps you navigate all project documentation and code.
 ## 🎯 Quick Navigation by Task
 
 ### I need to understand the system
-1. Read: [PROJECT_DASHBOARD.md](PROJECT_DASHBOARD.md) (5 min)
+1. Read: [STATUS_REPORT.md](STATUS_REPORT.md) (5 min)
 2. Read: [INGESTION_README.md](INGESTION_README.md) (10 min)
 3. Study: [ARCHITECTURE.md](ARCHITECTURE.md) (20 min)
 
@@ -149,13 +121,13 @@ This index helps you navigate all project documentation and code.
 
 | Document | Purpose | Length | Time to Read |
 |----------|---------|--------|-------------|
-| [PROJECT_DASHBOARD.md](PROJECT_DASHBOARD.md) | Visual overview | Comprehensive | 10 min |
-| [MANIFEST.md](MANIFEST.md) | Project inventory | Comprehensive | 10 min |
+| [STATUS_REPORT.md](STATUS_REPORT.md) | System overview | Comprehensive | 10 min |
 | [INGESTION_README.md](INGESTION_README.md) | User guide | 8.7 KB | 15 min |
 | [DEPLOYMENT_GUIDE.md](DEPLOYMENT_GUIDE.md) | Deployment | 7.0 KB | 15 min |
 | [QUICK_REFERENCE.md](QUICK_REFERENCE.md) | Operations | 4.0 KB | 10 min |
 | [ARCHITECTURE.md](ARCHITECTURE.md) | Design | 519 lines | 20 min |
-| [IMPLEMENTATION_SUMMARY.txt](IMPLEMENTATION_SUMMARY.txt) | Overview | 500+ lines | 15 min |
+| [UI_GUIDE.md](UI_GUIDE.md) | UI usage | Comprehensive | 10 min |
+| [UI_QUICKREF.md](UI_QUICKREF.md) | UI reference | Quick | 5 min |
 
 ---
 
@@ -191,8 +163,8 @@ Planned: Multi-worker (v2), Kafka (v3), ML pipeline (v4)
 ## 🚀 Quick Start Workflow
 
 ### Step 1: Preparation (15 min)
-- [ ] Read [PROJECT_DASHBOARD.md](PROJECT_DASHBOARD.md)
-- [ ] Review [MANIFEST.md](MANIFEST.md)
+- [ ] Read [STATUS_REPORT.md](STATUS_REPORT.md)
+- [ ] Read [UI_GUIDE.md](UI_GUIDE.md)
 - [ ] Understand requirements from [INGESTION_README.md](INGESTION_README.md)
 
 ### Step 2: Setup (1-2 hours)

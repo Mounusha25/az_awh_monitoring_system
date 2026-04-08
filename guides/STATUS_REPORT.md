@@ -53,7 +53,7 @@ The AWH (Atmospheric Water Harvesting) monitoring system has been successfully i
 
 ### Phase 1: Local Control Panel UI ✅
 
-**File**: `awh_ui_layout.py` (258 lines)
+**File**: `RPi_USB_Package/awh_ui_layout.py` (258 lines)
 
 **Components**:
 - Professional Tkinter interface with ttk styling
@@ -64,7 +64,14 @@ The AWH (Atmospheric Water Harvesting) monitoring system has been successfully i
 - Status indicators (runtime, sensor health)
 - Config lock prevents changes during acquisition
 
-**Status**: COMPLETE, TESTED, DEPLOYED
+**Related Files** (all in `RPi_USB_Package/`):
+- `AquaPars1.py` — Main controller (run on RPi)
+- `pump_controller.py` — gpiozero-based GPIO control (RPi 4 & 5)
+- `read_balance.py` — Serial balance reader (auto-detect)
+- `read_power.py` — Modbus power meter reader
+- `read_flow.py` — Pulse flow meter (gpiozero)
+- `intake_anemometer.py` / `outtake_anemometer.py` — Anemometer decoders
+- `sim_run_on_mac.py` — Run full pipeline on Mac with simulated hardware
 
 ---
 
@@ -260,32 +267,15 @@ python-dotenv==1.0.0         # Environment config
 
 ---
 
-#### 2.5.5 Implementation Overview
+#### 2.5.5 UI Documentation
 
-**File**: `IMPLEMENTATION_SUMMARY.txt` (500+ lines)
-
-**Contents**:
-- High-level project overview
-- Key features summary
-- Production readiness assessment
-- Performance metrics
-- Quick start guide
-- Next steps roadmap
-- Support resources
-
----
-
-#### 2.5.6 Completion Checklist
-
-**File**: `COMPLETION_CHECKLIST.md` (This file)
+**Files**: `UI_GUIDE.md`, `UI_QUICKREF.md`
 
 **Contents**:
-- Phase-by-phase status
-- Production readiness assessment
-- File summary
-- Git integration status
-- Next steps for deployment
-- Success criteria verification
+- Full usage guide for the Tkinter control panel
+- Quick reference card with state machine, buttons, configuration
+- Updated to reference `RPi_USB_Package/` paths
+- Instructions for Mac simulation mode
 
 ---
 
@@ -349,16 +339,26 @@ python-dotenv==1.0.0         # Environment config
 - `test_ingestion_worker.py` - 283 lines
 - `requirements_ingestion.txt` - 11 lines
 
-### Documentation Files (3000+ lines)
+### Documentation Files
 - `INGESTION_README.md` - 8.7 KB
 - `DEPLOYMENT_GUIDE.md` - 7.0 KB
 - `QUICK_REFERENCE.md` - 4.0 KB
 - `ARCHITECTURE.md` - 519 lines
-- `IMPLEMENTATION_SUMMARY.txt` - 500+ lines
-- `COMPLETION_CHECKLIST.md` - This file
+- `STATUS_REPORT.md` - This file
+- `UI_GUIDE.md` - UI usage guide
+- `UI_QUICKREF.md` - UI quick reference
+- `INDEX.md` - Navigation guide
 
-### UI Files (258 lines)
-- `awh_ui_layout.py` - 258 lines (Tkinter interface)
+### UI Files
+- `RPi_USB_Package/awh_ui_layout.py` - 258 lines (Tkinter interface)
+- `RPi_USB_Package/AquaPars1.py` - Main controller
+- `RPi_USB_Package/pump_controller.py` - GPIO pump (gpiozero)
+- `RPi_USB_Package/read_balance.py` - Balance reader
+- `RPi_USB_Package/read_power.py` - Power meter reader
+- `RPi_USB_Package/read_flow.py` - Flow meter reader (gpiozero)
+- `RPi_USB_Package/intake_anemometer.py` - Intake anemometer
+- `RPi_USB_Package/outtake_anemometer.py` - Outtake anemometer
+- `RPi_USB_Package/sim_run_on_mac.py` - Mac simulation script
 
 **Total: 3200+ lines across 11 files**
 

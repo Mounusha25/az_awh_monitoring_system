@@ -15,14 +15,17 @@
 ### 1. Run the UI
 
 ```bash
-# Method 1: Direct run
-python3 awh_ui_layout.py
+# On Raspberry Pi (with real hardware):
+cd RPi_USB_Package
+python3 AquaPars1.py
 
-# Method 2: Import into another application
-python3
->>> from awh_ui_layout import AWHControlPanel
->>> app = AWHControlPanel()
->>> app.mainloop()
+# On Mac (simulation mode, no hardware needed):
+cd RPi_USB_Package
+python3 sim_run_on_mac.py
+
+# Standalone UI preview:
+cd RPi_USB_Package
+python3 awh_ui_layout.py
 ```
 
 ### 2. What You'll See

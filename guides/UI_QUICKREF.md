@@ -3,7 +3,14 @@
 ## 🚀 Run the UI
 
 ```bash
-python3 awh_ui_layout.py
+# On Raspberry Pi:
+cd RPi_USB_Package && python3 AquaPars1.py
+
+# On Mac (simulation):
+cd RPi_USB_Package && python3 sim_run_on_mac.py
+
+# Standalone UI preview:
+cd RPi_USB_Package && python3 awh_ui_layout.py
 ```
 
 The window will open showing:

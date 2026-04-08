@@ -6,7 +6,7 @@ import serial
 import time
 
 # Use udev symlink for stable device path or USB port
-DEFAULT_PORT = "/dev/ttyUSB3"
+DEFAULT_PORT = "/dev/ttyUSB1"
 
 def outtake_anemometer(serial_port: str = DEFAULT_PORT, baud_rate: int = 9600, timeout: int = 2):
     """

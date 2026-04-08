@@ -10,3 +10,6 @@ ENV/
 .venv
 *.log
 .DS_Store
+serviceAccountKey.json
+awh-project-*.json
+export.csv

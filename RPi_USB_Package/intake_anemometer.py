@@ -3,7 +3,7 @@ import os
 import serial
 
 # ใช้ symlink ที่สร้างจาก udev rules หรือกำหนด USB port โดยตรง
-DEFAULT_PORT = "/dev/ttyUSB2"
+DEFAULT_PORT = "/dev/ttyUSB0"
 
 def intake_anemometer(serial_port: str = DEFAULT_PORT, baud_rate: int = 9600):
     """อ่าน 1 packet จาก intake anemometer และ decode ค่า (humidity, temperature, velocity, unit)."""
