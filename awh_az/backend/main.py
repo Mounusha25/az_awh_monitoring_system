@@ -512,12 +512,15 @@ async def get_hourly_aggregation(
             row["abs_humidity_outtake_mean"] = None
             row["abs_humidity_outtake_std"] = None
 
-        # Water produced per hour (delta weight)
+        # Water produced per hour: sum of positive weight increments (never subtract)
         weights = [(r.get("timestamp", ""), r.get("weight")) for r in readings_in_hour
                     if isinstance(r.get("weight"), (int, float))]
         if len(weights) >= 2:
             weights.sort(key=lambda x: x[0])
-            water_produced = weights[-1][1] - weights[0][1]
+            water_produced = sum(
+                max(weights[i][1] - weights[i - 1][1], 0)
+                for i in range(1, len(weights))
+            )
             row["water_produced_g"] = round(water_produced, 4)
         else:
             row["water_produced_g"] = None
