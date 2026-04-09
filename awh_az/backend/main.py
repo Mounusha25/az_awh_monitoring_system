@@ -11,7 +11,6 @@ import logging
 
 import base64
 import tempfile
-import time
 
 import firebase_admin
 from firebase_admin import credentials, firestore
@@ -117,8 +116,6 @@ app = FastAPI(
     version="2.0.0",
 )
 
-_startup_time: float = time.time()
-
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.all_cors_origins,
@@ -154,60 +151,6 @@ async def health_check():
         timestamp=datetime.now(timezone.utc),
         services={"api": "online", "redis": redis_status, "firestore": fs_status},
     )
-
-
-@app.get("/stats", tags=["Health"])
-async def get_system_stats():
-    """System-wide statistics: stations, data points, uptime, endpoints."""
-    uptime_seconds = time.time() - _startup_time
-    hours, rem = divmod(int(uptime_seconds), 3600)
-    minutes, seconds = divmod(rem, 60)
-    uptime_str = f"{hours}h {minutes}m {seconds}s"
-
-    # Count endpoints
-    endpoint_count = len([r for r in app.routes if hasattr(r, "methods")])
-
-    station_count = 0
-    total_readings = 0
-    latest_timestamp: Optional[str] = None
-    oldest_timestamp: Optional[str] = None
-    station_names: list[str] = []
-
-    if db:
-        station_docs = list(db.collection(settings.firestore_collection).list_documents())
-        station_count = len(station_docs)
-        station_names = [s.id for s in station_docs]
-
-        for sdoc in station_docs:
-            # Count readings (Firestore doesn't have a cheap count, so we use SELECT on limit)
-            count_query = (
-                sdoc.collection("readings")
-                .order_by("timestamp", direction=firestore.Query.DESCENDING)
-                .limit(settings.max_query_limit)
-            )
-            docs = list(count_query.stream())
-            total_readings += len(docs)
-            if docs:
-                latest = _firestore_doc_to_dict(docs[0].to_dict()).get("timestamp")
-                if latest and (latest_timestamp is None or latest > latest_timestamp):
-                    latest_timestamp = latest
-                oldest_doc = sorted(docs, key=lambda d: d.to_dict().get("timestamp", ""))
-                oldest = _firestore_doc_to_dict(oldest_doc[0].to_dict()).get("timestamp")
-                if oldest and (oldest_timestamp is None or oldest < oldest_timestamp):
-                    oldest_timestamp = oldest
-
-    return {
-        "uptime": uptime_str,
-        "uptime_seconds": round(time.time() - _startup_time, 1),
-        "stations_monitored": station_count,
-        "station_names": station_names,
-        "total_data_points": total_readings,
-        "api_endpoints": endpoint_count,
-        "latest_reading": latest_timestamp,
-        "oldest_reading": oldest_timestamp,
-        "firestore_status": "online" if db else "offline",
-        "api_version": app.version,
-    }
 
 
 # ---------------------------------------------------------------------------
