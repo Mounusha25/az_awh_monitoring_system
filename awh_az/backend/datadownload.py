@@ -6,9 +6,9 @@ cred = credentials.Certificate('awh-project-460421-52cd6ebf2aa3.json')
 firebase_admin.initialize_app(cred)
 db = firestore.client()
 
-# Full range: March 29, 2026 to April 2, 2026 end of day
-start = datetime(2026, 3, 29, 0, 0)
-end   = datetime(2026, 4, 2, 9, 30)
+# Full range: September 1, 2025 to April 7, 2026 end of day
+start = datetime(2025, 9, 1, 0, 0)
+end   = datetime(2026, 4, 7, 23, 59)
 
 station = 'station_AquaPars #2 @Power Station, Tempe'
 query = (db.collection('stations').document(station)
