@@ -213,12 +213,27 @@ async def get_stations():
             total_readings=total_count,
         )
 
+        # Determine status: "active" only if the last reading was within 48 hours
+        last_ts_raw = latest.get("timestamp")
+        station_status = "inactive"
+        if last_ts_raw:
+            try:
+                from datetime import timezone
+                last_dt = datetime.fromisoformat(last_ts_raw) if isinstance(last_ts_raw, str) else last_ts_raw
+                if last_dt.tzinfo is None:
+                    last_dt = last_dt.replace(tzinfo=timezone.utc)
+                age_hours = (datetime.now(timezone.utc) - last_dt).total_seconds() / 3600
+                if age_hours <= 48:
+                    station_status = "active"
+            except Exception:
+                pass
+
         stations.append(
             StationInfo(
                 station_name=station_name,
                 unit=latest.get("unit", "Unknown"),
                 location=latest.get("location"),
-                status="active",
+                status=station_status,
                 metadata=metadata,
             )
         )
