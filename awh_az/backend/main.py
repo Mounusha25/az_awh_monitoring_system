@@ -268,11 +268,16 @@ async def get_station_readings(
     if cached:
         return cached
 
+    # When a start_date is given, order ASCENDING so limit returns records
+    # from the start of the range forward (not the most recent N records).
+    # When no start_date, order DESCENDING to get the latest readings first.
+    order_dir = firestore.Query.ASCENDING if start_date else firestore.Query.DESCENDING
+
     readings_ref = (
         db.collection(settings.firestore_collection)
         .document(station_name)
         .collection("readings")
-        .order_by("timestamp", direction=firestore.Query.DESCENDING)
+        .order_by("timestamp", direction=order_dir)
     )
 
     if start_date:
@@ -355,11 +360,12 @@ async def export_data(request: BulkExportRequest):
         ]
 
     for sname in station_names:
+        export_order = firestore.Query.ASCENDING if request.start_date else firestore.Query.DESCENDING
         query = (
             db.collection(settings.firestore_collection)
             .document(sname)
             .collection("readings")
-            .order_by("timestamp", direction=firestore.Query.DESCENDING)
+            .order_by("timestamp", direction=export_order)
         )
         if request.start_date:
             query = query.where("timestamp", ">=", request.start_date)
