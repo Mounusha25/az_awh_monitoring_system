@@ -13,6 +13,7 @@ class Settings(BaseSettings):
         "http://localhost:3001",
         "http://localhost:3002",
         "http://localhost:3003",
+        "https://azawhdashboard.vercel.app",
     ]
     cors_extra_origins: str = ""  # comma-separated production origins
     

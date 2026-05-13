@@ -1,8 +1,10 @@
+from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from typing import List, Optional
 from datetime import datetime, timezone
+from concurrent.futures import ThreadPoolExecutor
 import json
 import io
 import csv
@@ -110,10 +112,21 @@ def _build_field_groups(available_fields: list[str]) -> dict[str, list[str]]:
 # ---------------------------------------------------------------------------
 # FastAPI app
 # ---------------------------------------------------------------------------
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    init_firestore()
+    if db:
+        print("✅ Firestore initialised – ready to serve")
+    else:
+        print("⚠️  Firestore NOT initialised – check serviceAccountKey.json")
+    yield
+
+
 app = FastAPI(
     title="AWH Station Monitoring API",
     description="API for monitoring Atmospheric Water Harvesting stations — backed by Firestore",
     version="2.0.0",
+    lifespan=lifespan,
 )
 
 app.add_middleware(
@@ -123,15 +136,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-
-@app.on_event("startup")
-async def startup_event():
-    init_firestore()
-    if db:
-        print("✅ Firestore initialised – ready to serve")
-    else:
-        print("⚠️  Firestore NOT initialised – check serviceAccountKey.json")
 
 
 # ---------------------------------------------------------------------------
@@ -168,75 +172,62 @@ async def get_stations():
         return cached
 
     stations_ref = db.collection(settings.firestore_collection)
-    # Use list_documents() instead of stream() to find phantom parent docs
-    # (stations that have sub-collections but no document data)
-    station_docs = stations_ref.list_documents()
+    station_docs = list(stations_ref.list_documents())
 
-    stations: list[StationInfo] = []
-
-    for sdoc in station_docs:
-        station_name = sdoc.id
-
-        # Fetch last 50 readings to derive metadata
+    def _fetch_station(sdoc) -> Optional[StationInfo]:
+        sname = sdoc.id
         readings_ref = (
-            stations_ref.document(station_name)
+            stations_ref.document(sname)
             .collection("readings")
             .order_by("timestamp", direction=firestore.Query.DESCENDING)
             .limit(50)
         )
         reading_docs = list(readings_ref.stream())
-
         if not reading_docs:
-            continue
+            return None
 
-        # Derive available fields from sampled readings
         available_fields: set[str] = set()
         for rdoc in reading_docs:
-            data = rdoc.to_dict()
-            for key, val in data.items():
+            for key, val in rdoc.to_dict().items():
                 if val is not None and key not in SKIP_FIELDS:
                     available_fields.add(key)
 
         available_list = sorted(available_fields)
-        field_groups = _build_field_groups(available_list)
-
         latest = _firestore_doc_to_dict(reading_docs[0].to_dict())
 
-        # Count total readings (use aggregation if available, else estimate)
-        total_count = len(reading_docs)  # approximate from sample
-
         metadata = StationMetadata(
-            station_name=station_name,
+            station_name=sname,
             available_fields=available_list,
-            field_groups=field_groups,
+            field_groups=_build_field_groups(available_list),
             last_reading=latest.get("timestamp"),
-            total_readings=total_count,
+            total_readings=len(reading_docs),
         )
 
-        # Determine status: "active" only if the last reading was within 48 hours
-        last_ts_raw = latest.get("timestamp")
         station_status = "inactive"
+        last_ts_raw = latest.get("timestamp")
         if last_ts_raw:
             try:
-                from datetime import timezone
                 last_dt = datetime.fromisoformat(last_ts_raw) if isinstance(last_ts_raw, str) else last_ts_raw
                 if last_dt.tzinfo is None:
                     last_dt = last_dt.replace(tzinfo=timezone.utc)
-                age_hours = (datetime.now(timezone.utc) - last_dt).total_seconds() / 3600
-                if age_hours <= 48:
+                if (datetime.now(timezone.utc) - last_dt).total_seconds() / 3600 <= 48:
                     station_status = "active"
             except Exception:
                 pass
 
-        stations.append(
-            StationInfo(
-                station_name=station_name,
-                unit=latest.get("unit", "Unknown"),
-                location=latest.get("location"),
-                status=station_status,
-                metadata=metadata,
-            )
+        return StationInfo(
+            station_name=sname,
+            unit=latest.get("unit", "Unknown"),
+            location=latest.get("location"),
+            status=station_status,
+            metadata=metadata,
         )
+
+    # Fetch all stations in parallel — eliminates N sequential Firestore round-trips
+    with ThreadPoolExecutor(max_workers=min(len(station_docs), 16)) as executor:
+        results = list(executor.map(_fetch_station, station_docs))
+
+    stations: list[StationInfo] = [s for s in results if s is not None]
 
     cache.set(cache_key, [s.dict() for s in stations], ttl=300)
     return stations
@@ -285,15 +276,21 @@ async def get_station_readings(
     if end_date:
         readings_ref = readings_ref.where("timestamp", "<=", end_date)
 
-    # Fetch with offset + limit (Firestore doesn't support offset natively)
-    fetch_limit = offset + limit
-    docs = list(readings_ref.limit(fetch_limit).stream())
+    # Cursor-based pagination: skip `offset` docs without downloading them all.
+    # For offset=0 (the common case) we go straight to .limit(limit).
+    if offset > 0:
+        # Fetch just the cursor document cheaply, then start after it.
+        cursor_docs = list(readings_ref.limit(offset).stream())
+        if len(cursor_docs) == offset:
+            readings_ref = readings_ref.start_after(cursor_docs[-1])
+        else:
+            # Offset exceeds total — return empty
+            raise HTTPException(status_code=404, detail=f"Station '{station_name}' not found or has no readings")
+
+    docs = list(readings_ref.limit(limit).stream())
 
     if not docs:
         raise HTTPException(status_code=404, detail=f"Station '{station_name}' not found or has no readings")
-
-    # Apply offset
-    paged_docs = docs[offset:]
 
     # Parse readings
     requested_fields = None
@@ -304,7 +301,7 @@ async def get_station_readings(
     readings_list: list[dict] = []
     available_fields: set[str] = set()
 
-    for rdoc in paged_docs:
+    for rdoc in docs:
         data = _firestore_doc_to_dict(rdoc.to_dict())
 
         for key, val in data.items():
@@ -316,7 +313,7 @@ async def get_station_readings(
 
         readings_list.append(data)
 
-    total = len(docs)
+    total = offset + len(docs)  # best estimate without a full count scan
 
     metadata = StationMetadata(
         station_name=station_name,
@@ -448,6 +445,12 @@ async def get_hourly_aggregation(
     if not db:
         raise HTTPException(status_code=503, detail="Firestore not initialised")
 
+    # Cache hourly aggregations for 10 minutes (they are expensive to compute)
+    hourly_cache_key = f"hourly:{station_name}:{start_date}:{end_date}"
+    cached_hourly = cache.get(hourly_cache_key)
+    if cached_hourly:
+        return cached_hourly
+
     # Fetch readings
     readings_ref = (
         db.collection(settings.firestore_collection)
@@ -570,13 +573,15 @@ async def get_hourly_aggregation(
 
         hourly_rows.append(row)
 
-    return {
+    result = {
         "station_name": station_name,
         "start_date": start_date.isoformat() if start_date else None,
         "end_date": end_date.isoformat() if end_date else None,
         "total_hours": len(hourly_rows),
         "data": hourly_rows,
     }
+    cache.set(hourly_cache_key, result, ttl=600)
+    return result
 
 
 # ---------------------------------------------------------------------------
