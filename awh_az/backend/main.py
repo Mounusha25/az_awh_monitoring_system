@@ -417,6 +417,9 @@ AGGREGATION_FIELDS = [
     "power", "current", "voltage",
 ]
 
+# AWH device duct cross-sectional area (m²)
+AWH_DUCT_AREA_M2 = 0.18
+
 
 def _compute_absolute_humidity(temp_c: float, rh_pct: float) -> float:
     """Compute absolute humidity (g/m³) from temperature (°C) and relative humidity (%)."""
@@ -424,6 +427,20 @@ def _compute_absolute_humidity(temp_c: float, rh_pct: float) -> float:
     es = 6.112 * math.exp((17.67 * temp_c) / (temp_c + 243.5))
     ah = (216.7 * (rh_pct / 100.0) * es) / (273.15 + temp_c)
     return round(ah, 4)
+
+
+def _velocity_to_mps(velocity: float, unit: Optional[str]) -> float:
+    """Normalize velocity to m/s for physics-based calculations."""
+    u = (unit or "").lower()
+    if u == "km/h":
+        return velocity / 3.6
+    if u == "mph":
+        return velocity / 2.23694
+    if u == "ft/s":
+        return velocity / 3.28084
+    if u == "ft/m":
+        return velocity / 196.850394
+    return velocity
 
 
 @app.get("/stations/{station_name}/hourly", tags=["Analytics"])
@@ -441,6 +458,7 @@ async def get_hourly_aggregation(
     - water_produced_L (delta weight per hour)
     - energy_consumed_kWh (delta energy per hour)
     - energy_per_liter (kWh/L)
+    - harvesting_efficiency_pct_hourly (ratio of captured water vs intake-available water over the hour)
     """
     if not db:
         raise HTTPException(status_code=503, detail="Firestore not initialised")
@@ -570,6 +588,53 @@ async def get_hourly_aggregation(
         else:
             row["energy_per_liter_kWh_L"] = None
             row["water_produced_L"] = row.get("water_produced_g", None) and round(row["water_produced_g"] / 1000.0, 6)
+
+        # Hourly harvesting efficiency (%):
+        # (sum of positive weight deltas) / (sum of intake-available water in same intervals) * 100
+        sorted_hour = sorted(readings_in_hour, key=lambda r: r.get("timestamp", ""))
+        captured_g = 0.0
+        intake_available_g = 0.0
+        for i in range(1, len(sorted_hour)):
+            prev_r = sorted_hour[i - 1]
+            cur_r = sorted_hour[i]
+
+            prev_w = prev_r.get("weight")
+            cur_w = cur_r.get("weight")
+            if isinstance(prev_w, (int, float)) and isinstance(cur_w, (int, float)):
+                captured_g += max(cur_w - prev_w, 0)
+
+            t = cur_r.get("temperature")
+            h = cur_r.get("humidity")
+            v = cur_r.get("velocity")
+            unit = cur_r.get("unit")
+
+            if not (isinstance(t, (int, float)) and isinstance(h, (int, float)) and isinstance(v, (int, float))):
+                continue
+            if h <= 0 or v <= 0:
+                continue
+
+            abs_h = _compute_absolute_humidity(t, h)
+            vel_mps = _velocity_to_mps(v, unit if isinstance(unit, str) else None)
+            if abs_h <= 0 or vel_mps <= 0:
+                continue
+
+            try:
+                dt_ms = (
+                    datetime.fromisoformat(cur_r.get("timestamp").replace("Z", "+00:00"))
+                    - datetime.fromisoformat(prev_r.get("timestamp").replace("Z", "+00:00"))
+                ).total_seconds() * 1000
+            except Exception:
+                dt_ms = 30000
+
+            dt_s = min(max(dt_ms / 1000.0, 0.0), 120.0)
+            intake_available_g += abs_h * vel_mps * AWH_DUCT_AREA_M2 * dt_s
+
+        row["intake_available_water_g_hourly"] = round(intake_available_g, 4) if intake_available_g > 0 else None
+        row["water_captured_g_hourly"] = round(captured_g, 4) if captured_g > 0 else 0.0
+        if intake_available_g > 0:
+            row["harvesting_efficiency_pct_hourly"] = round(min((captured_g / intake_available_g) * 100.0, 100.0), 4)
+        else:
+            row["harvesting_efficiency_pct_hourly"] = 0.0
 
         hourly_rows.append(row)
 
