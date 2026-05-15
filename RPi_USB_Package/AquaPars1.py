@@ -124,6 +124,9 @@ class BalanceReader:
         self.pump = pump
         self.pump.set_status_callback(update_pump_status_callback)
 
+        # Station identity (can be overridden via UI before start)
+        self.station_name = STATION_NAME
+
         # CSV
         self.create_new_csv_file()
 
@@ -288,6 +291,11 @@ class BalanceReader:
         except ValueError:
             return False
 
+    def set_station_name(self, station_name):
+        """Set the station name for cloud uploads (called from UI before start)."""
+        self.station_name = station_name
+        print(f"[Station] Station set to: {station_name}")
+
     # ---------- Save / Cloud ----------
     def _operation_time_hms(self):
         elapsed = int(time.time() - self.start_time)
@@ -338,7 +346,7 @@ class BalanceReader:
 
         # Throttled cloud upload (every CLOUD_UPLOAD_EVERY_SEC)
         if (now_ts - self._last_cloud_upload_ts) >= self.cloud_upload_interval_secs:
-            send_to_cloud(STATION_NAME, {
+            send_to_cloud(self.station_name, {
                 "temperature": t_in, "humidity": h_in, "velocity": v_in, "unit": v_unit_in,
                 "outtake_temperature": t_out, "outtake_humidity": h_out, "outtake_velocity": v_out, "outtake_unit": v_unit_out,
                 "voltage": V, "current": A, "power": W, "energy": Wh,
@@ -437,7 +445,7 @@ def main():
     )
 
     # Create UI and wire it to backend controller
-    app = AWHControlPanel(controller=controller)
+    app = AWHControlPanel(controller=controller, backend_url="http://localhost:8000")
 
     # Connect backend callbacks to UI updates
     controller.callback = app.update_status
