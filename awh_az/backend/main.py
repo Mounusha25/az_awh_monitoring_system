@@ -23,7 +23,9 @@ from models import (
     StationMetadata,
     ReadingsResponse,
     BulkExportRequest,
-    HealthResponse
+    HealthResponse,
+    StationRegistryItem,
+    StationRegistryResponse,
 )
 from config import settings
 from cache import cache, get_stations_cache_key, get_station_readings_cache_key, invalidate_station_cache
@@ -650,8 +652,64 @@ async def get_hourly_aggregation(
 
 
 # ---------------------------------------------------------------------------
-# Cache management
+# Station Registry (for RPi UI dropdown & ingestion validation)
 # ---------------------------------------------------------------------------
+@app.get("/stations-registry", response_model=StationRegistryResponse, tags=["Registry"])
+async def get_stations_registry(
+    status: Optional[str] = Query(None, description="Filter by status: ACTIVE, INACTIVE, PENDING")
+):
+    """Return the list of known stations from Firestore with their online/offline status.
+
+    Used by:
+    - RPi control panel to populate the station selector dropdown
+    - Ingestion worker to validate incoming measurements
+    """
+    if not db:
+        raise HTTPException(status_code=503, detail="Firestore not initialised")
+
+    stations_ref = db.collection(settings.firestore_collection)
+    station_docs = list(stations_ref.list_documents())
+
+    def _classify(sdoc) -> StationRegistryItem:
+        sname = sdoc.id
+        # Peek at the latest reading to determine online/offline
+        reading_docs = list(
+            stations_ref.document(sname)
+            .collection("readings")
+            .order_by("timestamp", direction=firestore.Query.DESCENDING)
+            .limit(1)
+            .stream()
+        )
+
+        if not reading_docs:
+            station_status = "PENDING"
+        else:
+            last_ts_raw = reading_docs[0].to_dict().get("timestamp")
+            station_status = "INACTIVE"
+            if last_ts_raw:
+                try:
+                    last_dt = datetime.fromisoformat(last_ts_raw) if isinstance(last_ts_raw, str) else last_ts_raw
+                    if last_dt.tzinfo is None:
+                        last_dt = last_dt.replace(tzinfo=timezone.utc)
+                    if (datetime.now(timezone.utc) - last_dt).total_seconds() / 3600 <= 48:
+                        station_status = "ACTIVE"
+                except Exception:
+                    pass
+
+        return StationRegistryItem(
+            station_name=sname,
+            location=sname.split("@", 1)[1].strip() if "@" in sname else None,
+            status=station_status,
+        )
+
+    with ThreadPoolExecutor(max_workers=min(len(station_docs), 16)) as executor:
+        items = list(executor.map(_classify, station_docs))
+
+    if status:
+        items = [s for s in items if s.status == status.upper()]
+
+    items.sort(key=lambda s: s.station_name)
+    return StationRegistryResponse(stations=items, total=len(items))
 @app.get("/cache/stats", tags=["Cache"])
 async def get_cache_stats():
     return cache.get_stats()

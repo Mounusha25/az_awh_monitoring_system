@@ -79,6 +79,19 @@ class StationInfo(BaseModel):
     metadata: StationMetadata
 
 
+class StationRegistryItem(BaseModel):
+    """Lightweight registry entry for a station (used by RPi UI and validation)"""
+    station_name: str
+    location: Optional[str] = None
+    status: str  # ACTIVE, INACTIVE, PENDING
+
+
+class StationRegistryResponse(BaseModel):
+    """Response for /stations-registry endpoint"""
+    stations: List[StationRegistryItem]
+    total: int
+
+
 class ReadingsQueryParams(BaseModel):
     """Query parameters for filtering readings"""
     station_name: Optional[str] = None
