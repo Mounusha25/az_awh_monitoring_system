@@ -303,6 +303,114 @@ class AWHControlPanel(tk.Tk):
         )
         self.connect_station_btn.grid(row=1, column=2, padx=10)
 
+        self.add_station_btn = ttk.Button(
+            frame,
+            text="+ Add New Station",
+            command=self._open_add_station_dialog
+        )
+        self.add_station_btn.grid(row=2, column=2, padx=10, pady=(6, 0))
+
+    def _open_add_station_dialog(self):
+        """Open a modal dialog to register a new station."""
+        dialog = tk.Toplevel(self)
+        dialog.title("Register New Station")
+        dialog.geometry("460x220")
+        dialog.resizable(False, False)
+        dialog.grab_set()  # block main window
+
+        pad = {"padx": 12, "pady": 6}
+
+        ttk.Label(
+            dialog,
+            text="Station Name:"
+        ).grid(row=0, column=0, sticky="w", **pad)
+
+        name_var = tk.StringVar()
+        name_entry = ttk.Entry(dialog, textvariable=name_var, width=36)
+        name_entry.grid(row=0, column=1, sticky="ew", **pad)
+        name_entry.insert(0, "AquaPars #X @Location")
+        name_entry.bind("<FocusIn>", lambda e: name_entry.delete(0, "end") if name_entry.get() == "AquaPars #X @Location" else None)
+
+        ttk.Label(
+            dialog,
+            text="Location (optional):"
+        ).grid(row=1, column=0, sticky="w", **pad)
+
+        loc_var = tk.StringVar()
+        loc_entry = ttk.Entry(dialog, textvariable=loc_var, width=36)
+        loc_entry.grid(row=1, column=1, sticky="ew", **pad)
+
+        status_label = ttk.Label(dialog, text="", foreground="red")
+        status_label.grid(row=2, column=0, columnspan=2, sticky="w", **pad)
+
+        def _on_create():
+            name = name_var.get().strip()
+            if not name or name == "AquaPars #X @Location":
+                status_label.config(text="Station name is required.")
+                return
+            loc = loc_var.get().strip()
+            if loc and "@" not in name:
+                name = f"{name} @{loc}"
+            create_btn.config(state="disabled")
+            status_label.config(text="Creating...", foreground="blue")
+            threading.Thread(
+                target=self._do_add_station,
+                args=(name, dialog, status_label, create_btn),
+                daemon=True
+            ).start()
+
+        btn_frame = ttk.Frame(dialog)
+        btn_frame.grid(row=3, column=0, columnspan=2, pady=10)
+
+        create_btn = ttk.Button(btn_frame, text="Create Station", command=_on_create)
+        create_btn.pack(side="left", padx=8)
+        ttk.Button(btn_frame, text="Cancel", command=dialog.destroy).pack(side="left", padx=8)
+
+        dialog.columnconfigure(1, weight=1)
+        name_entry.focus()
+
+    def _do_add_station(self, station_name, dialog, status_label, create_btn):
+        """POST new station to backend (runs in background thread)."""
+        try:
+            response = requests.post(
+                f"{self.backend_url}/stations-registry",
+                json={"station_name": station_name},
+                timeout=8
+            )
+            if response.status_code == 201:
+                # Re-fetch full list so we're in sync with backend
+                self.after(0, lambda: status_label.config(text="Station created! Refreshing...", foreground="green"))
+                try:
+                    reg = requests.get(f"{self.backend_url}/stations-registry", timeout=5)
+                    if reg.status_code == 200:
+                        self._stations = [s["station_name"] for s in reg.json().get("stations", [])]
+                except Exception:
+                    # If refresh fails, just append locally
+                    if station_name not in self._stations:
+                        self._stations.append(station_name)
+                        self._stations.sort()
+
+                def _apply():
+                    self.station_selector.config(values=self._stations, state="readonly")
+                    self.station_selector.set(station_name)
+                    self.connect_station_btn.config(state="normal")
+                    self.station_registry_label.config(
+                        text=f"Registry: {len(self._stations)} stations  •  '{station_name}' added"
+                    )
+                    dialog.destroy()
+
+                self.after(0, _apply)
+            elif response.status_code == 409:
+                self.after(0, lambda: status_label.config(text="Station already exists.", foreground="red"))
+                self.after(0, lambda: create_btn.config(state="normal"))
+            else:
+                msg = response.json().get("detail", response.text)
+                self.after(0, lambda m=msg: status_label.config(text=f"Error: {m}", foreground="red"))
+                self.after(0, lambda: create_btn.config(state="normal"))
+        except Exception as e:
+            self.after(0, lambda m=str(e): status_label.config(text=f"Could not reach backend: {m}", foreground="red"))
+            self.after(0, lambda: create_btn.config(state="normal"))
+
     def _build_configuration(self):
         """Build configuration section (Step 2)."""
         cfg = ttk.LabelFrame(

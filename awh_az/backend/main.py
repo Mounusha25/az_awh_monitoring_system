@@ -26,6 +26,7 @@ from models import (
     HealthResponse,
     StationRegistryItem,
     StationRegistryResponse,
+    CreateStationRequest,
 )
 from config import settings
 from cache import cache, get_stations_cache_key, get_station_readings_cache_key, invalidate_station_cache
@@ -710,6 +711,44 @@ async def get_stations_registry(
 
     items.sort(key=lambda s: s.station_name)
     return StationRegistryResponse(stations=items, total=len(items))
+
+
+@app.post("/stations-registry", response_model=StationRegistryItem, status_code=201, tags=["Registry"])
+async def create_station(payload: CreateStationRequest):
+    """Register a new station in Firestore.
+
+    Called by the RPi control panel when an operator sets up a new device.
+    The station is created with status PENDING (no readings yet).
+    Returns 409 Conflict if a station with that name already exists.
+    """
+    if not db:
+        raise HTTPException(status_code=503, detail="Firestore not initialised")
+
+    station_name = payload.station_name.strip()
+    if not station_name:
+        raise HTTPException(status_code=422, detail="station_name must not be empty")
+
+    doc_ref = db.collection(settings.firestore_collection).document(station_name)
+    if doc_ref.get().exists:
+        raise HTTPException(status_code=409, detail=f"Station '{station_name}' already exists")
+
+    location = payload.location
+    if location is None and "@" in station_name:
+        location = station_name.split("@", 1)[1].strip()
+
+    doc_ref.set({
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "status": "PENDING",
+        "location": location or "",
+    })
+
+    return StationRegistryItem(
+        station_name=station_name,
+        location=location,
+        status="PENDING",
+    )
+
+
 @app.get("/cache/stats", tags=["Cache"])
 async def get_cache_stats():
     return cache.get_stats()

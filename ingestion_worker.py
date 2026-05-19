@@ -26,17 +26,17 @@ from firebase_admin import credentials, firestore
 
 DATABASE_URL = os.getenv(
     "DATABASE_URL",
-    "postgresql://user:password@localhost:5432/awh_db"
+    "postgresql://mounusha@localhost:5432/awh_db"
 )
 
 FIREBASE_CREDENTIALS_PATH = os.getenv(
     "FIREBASE_CREDENTIALS_PATH",
-    "/path/to/firebase-key.json"
+    os.path.join(os.path.dirname(__file__), "awh_az/backend/awh-project-460421-52cd6ebf2aa3.json")
 )
 
 CHECKPOINT_PATH = os.getenv(
     "CHECKPOINT_PATH",
-    "/var/lib/awh-ingestion/checkpoint.json"
+    os.path.expanduser("~/.awh-ingestion/checkpoint.json")
 )
 
 POLL_INTERVAL_SECONDS = int(os.getenv("POLL_INTERVAL_SECONDS", "60"))

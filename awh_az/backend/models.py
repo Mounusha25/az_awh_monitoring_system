@@ -92,6 +92,12 @@ class StationRegistryResponse(BaseModel):
     total: int
 
 
+class CreateStationRequest(BaseModel):
+    """Request body for registering a new station"""
+    station_name: str
+    location: Optional[str] = None
+
+
 class ReadingsQueryParams(BaseModel):
     """Query parameters for filtering readings"""
     station_name: Optional[str] = None
