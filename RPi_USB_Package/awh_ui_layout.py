@@ -8,7 +8,7 @@ import requests
 class AWHControlPanel(tk.Tk):
     """AWH Station Control Panel with Station Registry support."""
 
-    def __init__(self, controller=None, backend_url="http://localhost:8000"):
+    def __init__(self, controller=None, backend_url="https://az-awh-monitoring-system.onrender.com"):
         super().__init__()
 
         self.controller = controller

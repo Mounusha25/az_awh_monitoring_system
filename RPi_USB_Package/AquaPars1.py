@@ -445,7 +445,7 @@ def main():
     )
 
     # Create UI and wire it to backend controller
-    app = AWHControlPanel(controller=controller, backend_url="http://localhost:8000")
+    app = AWHControlPanel(controller=controller, backend_url="https://az-awh-monitoring-system.onrender.com")
 
     # Connect backend callbacks to UI updates
     controller.callback = app.update_status
