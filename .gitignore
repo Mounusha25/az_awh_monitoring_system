@@ -3,7 +3,7 @@ awh_az/backend/serviceAccountKey.json
 awh_az/backend/awh-project-460421-52cd6ebf2aa3.json
 
 # Python
-__pycache__/
+**/__pycache__/
 *.py[cod]
 *.pyo
 *.pyd
@@ -26,7 +26,7 @@ awh_az/water-station-dashboard/.env.local
 .env.*.local
 
 # OS
-.DS_Store
+**/.DS_Store
 Thumbs.db
 
 # IDE

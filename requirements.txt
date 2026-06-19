@@ -1,0 +1,74 @@
+# ============================================================
+# AzAWH Monitoring System — Unified Requirements
+# Python 3.13+  |  Last updated: May 2026
+# ============================================================
+# Covers all components:
+#   - FastAPI backend  (awh_az/backend/)
+#   - Firebase→PostgreSQL ingestion worker  (ingestion_worker.py)
+#   - Raspberry Pi edge layer  (RPi_USB_Package/)
+#   - Development & testing
+#
+# NOTE: GPIO packages (gpiozero, lgpio) are Raspberry Pi only.
+#       They are commented out here — uncomment when installing
+#       on the Pi hardware.
+# ============================================================
+
+# ------------------------------------------------------------
+# Web Framework — FastAPI backend
+# ------------------------------------------------------------
+fastapi==0.115.5
+uvicorn[standard]==0.32.1
+python-multipart==0.0.18
+aiofiles==24.1.0
+
+# ------------------------------------------------------------
+# Data Validation & Configuration
+# ------------------------------------------------------------
+pydantic==2.10.3
+pydantic-settings==2.6.1
+python-dotenv==1.0.1
+
+# ------------------------------------------------------------
+# Firebase / Firestore (backend + ingestion worker + RPi)
+# ------------------------------------------------------------
+firebase-admin==6.6.0
+google-cloud-firestore==2.19.0
+google-cloud-storage==2.18.2
+
+# ------------------------------------------------------------
+# Database — PostgreSQL (ingestion worker)
+# ------------------------------------------------------------
+psycopg2-binary>=2.9.9
+
+# ------------------------------------------------------------
+# Caching — Redis (backend)
+# ------------------------------------------------------------
+redis==5.2.0
+
+# ------------------------------------------------------------
+# Data Processing & Export (backend)
+# ------------------------------------------------------------
+pandas==2.2.3
+pyarrow==18.1.0
+
+# ------------------------------------------------------------
+# Serial Communication — USB sensors (RPi edge layer)
+# ------------------------------------------------------------
+pyserial>=3.5
+
+# ------------------------------------------------------------
+# HTTP Client — RPi UI backend calls
+# ------------------------------------------------------------
+requests>=2.31.0
+
+# ------------------------------------------------------------
+# Testing
+# ------------------------------------------------------------
+pytest>=8.0.0
+pytest-mock>=3.14.0
+
+# ------------------------------------------------------------
+# Raspberry Pi GPIO — UNCOMMENT on Pi hardware only
+# ------------------------------------------------------------
+# gpiozero>=2.0
+# lgpio>=0.2

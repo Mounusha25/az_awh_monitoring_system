@@ -11,7 +11,7 @@ import json
 import logging
 import os
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 import psycopg2
@@ -40,7 +40,7 @@ CHECKPOINT_PATH = os.getenv(
 )
 
 POLL_INTERVAL_SECONDS = int(os.getenv("POLL_INTERVAL_SECONDS", "60"))
-BATCH_SIZE = int(os.getenv("BATCH_SIZE", "500"))
+BATCH_SIZE = int(os.getenv("BATCH_SIZE", "4000"))
 MAX_RETRIES = int(os.getenv("MAX_RETRIES", "5"))
 
 # ============================================
@@ -104,7 +104,7 @@ class CheckpointManager:
         data = {
             'last_processed_timestamp': timestamp,
             'processed_count': count,
-            'last_update': datetime.utcnow().isoformat()
+            'last_update': datetime.now(timezone.utc).isoformat()
         }
 
         try:
@@ -144,6 +144,25 @@ class FirebaseClient:
         """
         Query Firestore for documents newer than checkpoint.
 
+        Firestore structure: stations/{station_name}/readings/{doc_id}
+
+        Queries each station's 'readings' subcollection individually, then
+        merges and sorts by timestamp. This avoids requiring a Firestore
+        collection-group index on 'timestamp'.
+
+        To switch to a single collection_group query (faster for large backlogs),
+        create the index at:
+        https://console.firebase.google.com/project/awh-project-460421/firestore/indexes
+        — add a Collection Group index on 'readings' with field 'timestamp' ASC —
+        then replace this method body with:
+            return list(
+                self.db.collection_group('readings')
+                .where('timestamp', '>', since_timestamp)
+                .order_by('timestamp')
+                .limit(limit)
+                .stream()
+            )
+
         Args:
             since_timestamp: ISO 8601 string (e.g., "2025-10-02T13:15:53.937Z")
             limit: Max documents to fetch per query
@@ -152,21 +171,45 @@ class FirebaseClient:
             List of document dicts or empty list on error
         """
         try:
-            collection = self.db.collection('measurements')
-            query = (
-                collection
-                .where('timestamp', '>', since_timestamp)
-                .order_by('timestamp')
-                .limit(limit)
-            )
+            stations = list(self.db.collection('stations').list_documents())
+            if not stations:
+                logger.warning("No stations found in Firestore")
+                return []
 
-            docs = query.stream()
-            result = [doc.to_dict() for doc in docs]
-            logger.info(f"Fetched {len(result)} documents from Firebase")
+            # Firestore stores 'timestamp' as a Timestamp object, not a string.
+            # Convert the ISO checkpoint string to a timezone-aware datetime.
+            if isinstance(since_timestamp, str):
+                since_dt = datetime.fromisoformat(
+                    since_timestamp.replace('Z', '+00:00')
+                )
+            else:
+                since_dt = since_timestamp
+
+            per_station = max(limit // len(stations), 50)
+            all_docs = []
+
+            for sdoc in stations:
+                docs = list(
+                    sdoc.collection('readings')
+                    .where('timestamp', '>', since_dt)
+                    .order_by('timestamp')
+                    .limit(per_station)
+                    .stream()
+                )
+                all_docs.extend([d.to_dict() for d in docs])
+
+            # Sort globally by timestamp, honour the overall batch limit
+            all_docs.sort(key=lambda x: x.get('timestamp', ''))
+            result = all_docs[:limit]
+
+            logger.info(
+                f"Fetched {len(result)} documents from Firestore "
+                f"({len(stations)} stations, {per_station} per station)"
+            )
             return result
 
         except Exception as e:
-            logger.error(f"Firebase query failed: {e}")
+            logger.error(f"Firestore query failed: {e}")
             return []
 
 
@@ -433,8 +476,13 @@ class IngestionWorker:
         # Insert to PostgreSQL
         self.inserter.insert_batch(batch)
 
-        # Update checkpoint to max timestamp in batch
-        new_checkpoint = max(doc['timestamp'] for doc in batch)
+        # Update checkpoint to max timestamp in batch.
+        # Firestore returns DatetimeWithNanoseconds; convert to ISO string for JSON storage.
+        max_ts = max(doc['timestamp'] for doc in batch)
+        if hasattr(max_ts, 'isoformat'):
+            new_checkpoint = max_ts.isoformat()
+        else:
+            new_checkpoint = str(max_ts)
         return new_checkpoint
 
     def main_loop(self):

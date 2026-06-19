@@ -26,7 +26,7 @@ class Settings(BaseSettings):
     
     # Firebase Configuration
     firebase_credentials_path: str = os.path.join(
-        os.path.dirname(__file__), "serviceAccountKey.json"
+        os.path.dirname(__file__), "awh-project-460421-52cd6ebf2aa3.json"
     )
     firestore_collection: str = "stations"
     
