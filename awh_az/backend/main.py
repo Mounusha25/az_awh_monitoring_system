@@ -38,6 +38,13 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 db = None
 
+DEFAULT_REGISTRY_STATIONS = [
+    {
+        "station_name": "station_testbed_1@Powerplant",
+        "location": "Powerplant",
+    },
+]
+
 
 def init_firestore():
     global db
@@ -63,6 +70,26 @@ def init_firestore():
     firebase_admin.initialize_app(cred)
     db = firestore.client()
     logger.info("✅ Firestore connected (from file)")
+
+
+def ensure_default_registry_stations():
+    """Seed required registry stations so new deployments appear in the UI automatically."""
+    if not db:
+        return
+
+    stations_ref = db.collection(settings.firestore_collection)
+    for station in DEFAULT_REGISTRY_STATIONS:
+        station_name = station["station_name"].strip()
+        doc_ref = stations_ref.document(station_name)
+        if doc_ref.get().exists:
+            continue
+
+        doc_ref.set({
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "status": "PENDING",
+            "location": station.get("location", ""),
+        })
+        logger.info(f"✅ Seeded registry station: {station_name}")
 
 
 # ---------------------------------------------------------------------------
@@ -118,6 +145,7 @@ def _build_field_groups(available_fields: list[str]) -> dict[str, list[str]]:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_firestore()
+    ensure_default_registry_stations()
     if db:
         print("✅ Firestore initialised – ready to serve")
     else:

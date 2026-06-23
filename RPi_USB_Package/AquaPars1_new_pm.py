@@ -32,7 +32,7 @@ from awh_ui_layout import AWHControlPanel
 # Configuration / Constants
 # ============================================
 
-STATION_NAME = "station_AquaPars #2 @Power Station, Tempe"
+STATION_NAME = "station_testbed_1@Powerplant"
 CLOUD_URL = "https://us-central1-awh-project-460421.cloudfunctions.net/receive_data"
 
 # Upload throttle (seconds)
