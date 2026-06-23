@@ -7,8 +7,13 @@
 import minimalmodbus
 import time
 import threading
+import os
 
-PORT    = '/dev/ttyUSB4'   # change if needed (run: ls /dev/ttyUSB*)
+# Stable symlink that survives reboots regardless of plug-in order.
+# Find yours with: ls /dev/serial/by-id/
+# Falls back to /dev/ttyUSB4 if symlink is not present.
+DEFAULT_PORT = "/dev/serial/by-id/usb-Prolific_Technology_Inc._USB-Serial_Controller_D-if00-port0"
+PORT    = DEFAULT_PORT if os.path.exists(DEFAULT_PORT) else '/dev/ttyUSB4'
 ADDRESS = 1                # default meter address (shown on LCD at boot)
 
 
@@ -25,7 +30,7 @@ class PowerMeterReader:
         Initialize the power meter reader.
         
         Args:
-            port: Serial port (default: /dev/ttyUSB4)
+            port: Serial port (default: by-id symlink, fallback /dev/ttyUSB4)
             baudrate: Baud rate (default: 9600)
             address: Modbus address (default: 1)
             interval: Poll interval in seconds (default: 10)
@@ -33,6 +38,8 @@ class PowerMeterReader:
             timeout: Serial timeout in seconds (default: 2)
         """
         self.port = port or PORT
+        if not os.path.exists(self.port):
+            raise RuntimeError(f"[Power] Port not found: {self.port} — run: ls /dev/serial/by-id/ or ls /dev/ttyUSB*")
         self.baudrate = baudrate
         self.address = address
         self.interval = int(interval)
@@ -171,7 +178,8 @@ def read_power():
 if __name__ == "__main__":
     # Quick test when run directly
     print("Testing DEM730P power meter via RS485...")
-    print("Make sure USB-RS485 adapter is connected to /dev/ttyUSB4")
+    print(f"Using port: {PORT}")
+    print("To find your port: ls /dev/serial/by-id/  or  ls /dev/ttyUSB*")
     print("-" * 50)
 
     data = read_power()
