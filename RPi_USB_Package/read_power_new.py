@@ -1,8 +1,13 @@
 # read_power_new.py — DAE DEM730P via RS485 Modbus RTU
 # Official DAE register map: only Total Energy available via RS485
 # Reference: DEM Modbus Reference Basic 1.4e (daecontrol.com)
-# Hardware: USB-RS485 adapter → Pi /dev/ttyUSB4
+# Hardware: USB-RS485 adapter → Pi /dev/ttyUSBx
 # Install: pip3 install minimalmodbus
+#
+# DEM730P defaults (from installation guide):
+#   Baud rate : 2400  (NOT 9600 — this is the most common wiring mistake)
+#   Address   : 1
+#   Baud options: 1200, 2400, 4800, 9600
 
 import minimalmodbus
 import time
@@ -11,10 +16,10 @@ import os
 
 # Stable symlink that survives reboots regardless of plug-in order.
 # Find yours with: ls /dev/serial/by-id/
-# Falls back to /dev/ttyUSB4 if symlink is not present.
+# Falls back to /dev/ttyUSB1 if symlink is not present.
 DEFAULT_PORT = "/dev/serial/by-id/usb-Prolific_Technology_Inc._USB-Serial_Controller_D-if00-port0"
-PORT    = DEFAULT_PORT if os.path.exists(DEFAULT_PORT) else '/dev/ttyUSB4'
-ADDRESS = 1                # default meter address (shown on LCD at boot)
+PORT    = DEFAULT_PORT if os.path.exists(DEFAULT_PORT) else '/dev/ttyUSB1'
+ADDRESS = 1                # default meter address (shown on LCD at boot — A1)
 
 
 class PowerMeterReader:
@@ -25,16 +30,17 @@ class PowerMeterReader:
     Note: DEM730P via RS485 can only read energy; returns (None, None, None, energy).
     """
 
-    def __init__(self, port=None, baudrate=9600, address=1, interval=10, callback=None, timeout=2):
+    def __init__(self, port=None, baudrate=2400, address=1, interval=10, callback=None, timeout=2):
         """
         Initialize the power meter reader.
-        
+
         Args:
-            port: Serial port (default: by-id symlink, fallback /dev/ttyUSB4)
-            baudrate: Baud rate (default: 9600)
+            port: Serial port (default: by-id symlink, fallback /dev/ttyUSB1)
+            baudrate: Baud rate (default: 2400 — DEM730P factory default per installation guide)
             address: Modbus address (default: 1)
             interval: Poll interval in seconds (default: 10)
-            callback: Function to call with (voltage, current, power, energy) - callback receives (None, None, None, energy_kwh)
+            callback: Function to call with (voltage, current, power, energy)
+                      DEM730P via RS485 only exposes energy → (None, None, None, energy_kwh)
             timeout: Serial timeout in seconds (default: 2)
         """
         self.port = port or PORT
@@ -63,7 +69,7 @@ class PowerMeterReader:
         self._running = False
         try:
             if self._instrument:
-                self._instrument.close()
+                self._instrument.serial.close()
         except Exception as e:
             print(f"[Power] Error closing connection: {e}")
         self._instrument = None
@@ -73,13 +79,13 @@ class PowerMeterReader:
         """Initialize the RS485 connection to the DEM730P meter."""
         try:
             inst = minimalmodbus.Instrument(self.port, self.address)
-            inst.serial.baudrate = self.baudrate
+            inst.serial.baudrate = self.baudrate  # 2400 default for DEM730P
             inst.serial.bytesize = 8
             inst.serial.parity   = 'N'
             inst.serial.stopbits = 1
             inst.serial.timeout  = self.timeout
             inst.mode            = minimalmodbus.MODE_RTU
-            print(f"[Power] Connected to {self.port} @ address {self.address}")
+            print(f"[Power] Connected to {self.port} @ {self.baudrate} baud, address {self.address}")
             return inst
         except Exception as e:
             print(f"[Power] Connection failed: {e}")
@@ -111,6 +117,10 @@ class PowerMeterReader:
 
             except Exception as e:
                 print(f"[Power] Poll error: {e}")
+                try:
+                    self._instrument.serial.close()  # release port before retry
+                except Exception:
+                    pass
                 self._instrument = None
                 time.sleep(2)  # backoff before retry
                 continue
@@ -120,7 +130,7 @@ class PowerMeterReader:
         # cleanup on exit
         try:
             if self._instrument:
-                self._instrument.close()
+                self._instrument.serial.close()
                 print("[Power] Closed connection")
         except Exception as e:
             print(f"[Power] Error during cleanup: {e}")
@@ -141,7 +151,7 @@ def read_power():
     """
     try:
         inst = minimalmodbus.Instrument(PORT, ADDRESS)
-        inst.serial.baudrate = 9600
+        inst.serial.baudrate = 2400  # DEM730P factory default
         inst.serial.bytesize = 8
         inst.serial.parity   = 'N'
         inst.serial.stopbits = 1
@@ -156,7 +166,7 @@ def read_power():
             signed=False
         )
         energy_kwh = round(raw * 0.01, 2)
-        inst.close()
+        inst.serial.close()
 
         return {
             'energy':       energy_kwh,  # kWh cumulative
