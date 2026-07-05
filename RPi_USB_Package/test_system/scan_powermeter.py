@@ -36,11 +36,14 @@ except ImportError:
 
 
 # ── Scan parameters ──────────────────────────────────────────────────────────
-BAUD_RATES    = [2400, 9600, 4800, 1200]     # 2400 is DEM730P factory default per installation guide
-ADDRESSES     = list(range(1, 33))           # address 1 is default; scan 1-32
+BAUD_RATES    = [9600, 2400, 4800, 1200]     # 9600 confirmed for this unit; 2400 was previous meter
+ADDRESSES     = list(range(1, 255))          # DEM730P supports addresses 0-254 per manual
 FUNC_CODES    = [3, 4]                       # FC3=read holding, FC4=read input
 REGISTER_SETS = [0x0000, 0x0100, 0x0001]    # common energy register locations
 TIMEOUT_S     = 0.5                          # per attempt — keep short for speed
+
+# Set to True to only scan baud 2400 (DEM730P confirmed default — 4x faster)
+FAST_MODE     = True
 
 
 def detect_ports(explicit_port=None):
@@ -116,18 +119,22 @@ def try_read(port, baud, address, func_code, register):
 def scan(ports):
     """Main scan loop — tries every combination."""
     hits = []
-    total = len(ports) * len(BAUD_RATES) * len(ADDRESSES) * len(FUNC_CODES) * len(REGISTER_SETS)
+    baud_rates_to_try = [9600] if FAST_MODE else BAUD_RATES
+    total = len(ports) * len(baud_rates_to_try) * len(ADDRESSES) * len(FUNC_CODES) * len(REGISTER_SETS)
+    est_minutes = round(total * TIMEOUT_S / 60, 1)
     done  = 0
 
     print("=" * 60)
-    print(f"SCANNING  ({total} combinations — please wait)")
-    print("Baud rates:", BAUD_RATES)
-    print("Addresses: 1-32")
+    print(f"SCANNING  ({total} combinations — est. {est_minutes} min)")
+    print(f"Baud rates: {baud_rates_to_try}  {'(fast mode — 2400 only)' if FAST_MODE else ''}")
+    print(f"Addresses: 1-254")
     print("=" * 60)
+
+    baud_rates_to_try = [9600] if FAST_MODE else BAUD_RATES
 
     for port in ports:
         print(f"\n[Port] {port}")
-        for baud in BAUD_RATES:
+        for baud in baud_rates_to_try:
             print(f"  [Baud {baud}]", end=" ", flush=True)
             found_at_baud = False
             for addr in ADDRESSES:

@@ -268,7 +268,7 @@ class StationManager:
                 """
                 INSERT INTO stations (station_name, location, created_at)
                 VALUES (%s, %s, NOW())
-                ON CONFLICT (station_name) DO UPDATE SET station_id=EXCLUDED.station_id
+                ON CONFLICT (station_name) DO NOTHING
                 RETURNING station_id
                 """,
                 (station_name, location)

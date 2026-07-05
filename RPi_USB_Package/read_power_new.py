@@ -5,8 +5,8 @@
 # Install: pip3 install minimalmodbus
 #
 # DEM730P defaults (from installation guide):
-#   Baud rate : 2400  (NOT 9600 — this is the most common wiring mistake)
-#   Address   : 1
+#   Baud rate : 9600  (confirmed from manual for this unit)
+#   Address   : last 2 digits of serial number (e.g. serial ending 01 → address 1)
 #   Baud options: 1200, 2400, 4800, 9600
 
 import minimalmodbus
@@ -17,9 +17,9 @@ import os
 # Stable symlink that survives reboots regardless of plug-in order.
 # Find yours with: ls /dev/serial/by-id/
 # Falls back to /dev/ttyUSB1 if symlink is not present.
-DEFAULT_PORT = "/dev/serial/by-id/usb-Prolific_Technology_Inc._USB-Serial_Controller_D-if00-port0"
+DEFAULT_PORT = "/dev/serial/by-id/usb-FTDI_USB_Serial_Device-if00-port0"
 PORT    = DEFAULT_PORT if os.path.exists(DEFAULT_PORT) else '/dev/ttyUSB1'
-ADDRESS = 1                # default meter address (shown on LCD at boot — A1)
+ADDRESS = 1                # last 2 digits of serial number — new meter serial ends in 01
 
 
 class PowerMeterReader:
@@ -30,14 +30,14 @@ class PowerMeterReader:
     Note: DEM730P via RS485 can only read energy; returns (None, None, None, energy).
     """
 
-    def __init__(self, port=None, baudrate=2400, address=1, interval=10, callback=None, timeout=2):
+    def __init__(self, port=None, baudrate=9600, address=1, interval=10, callback=None, timeout=2):
         """
         Initialize the power meter reader.
 
         Args:
             port: Serial port (default: by-id symlink, fallback /dev/ttyUSB1)
             baudrate: Baud rate (default: 2400 — DEM730P factory default per installation guide)
-            address: Modbus address (default: 1)
+            address: Modbus address (default: 99 — confirmed from meter LCD)
             interval: Poll interval in seconds (default: 10)
             callback: Function to call with (voltage, current, power, energy)
                       DEM730P via RS485 only exposes energy → (None, None, None, energy_kwh)
@@ -85,6 +85,25 @@ class PowerMeterReader:
             inst.serial.stopbits = 1
             inst.serial.timeout  = self.timeout
             inst.mode            = minimalmodbus.MODE_RTU
+
+            # Enable RS485 half-duplex RTS direction control.
+            # Some USB-RS485 adapters need RTS toggled to switch between
+            # transmit and receive. Without this, the adapter keeps its
+            # transmitter on after sending, blocking the meter's response.
+            try:
+                import serial.rs485
+                inst.serial.rs485_mode = serial.rs485.RS485Settings(
+                    rts_level_for_tx=True,
+                    rts_level_for_rx=False,
+                    loopback=False,
+                    delay_before_tx=0.0,
+                    delay_before_rx=0.0,
+                )
+                print("[Power] RS485 RTS direction control enabled")
+            except Exception:
+                # Adapter handles direction automatically — no action needed
+                print("[Power] RS485 RTS mode not supported by this adapter (auto-direction)")
+
             print(f"[Power] Connected to {self.port} @ {self.baudrate} baud, address {self.address}")
             return inst
         except Exception as e:
@@ -116,13 +135,17 @@ class PowerMeterReader:
                     self.callback(None, None, None, energy_kwh)
 
             except Exception as e:
-                print(f"[Power] Poll error: {e}")
+                if self._running:  # suppress error noise from intentional stop
+                    print(f"[Power] Poll error: {e}")
                 try:
-                    self._instrument.serial.close()  # release port before retry
+                    if self._instrument:
+                        self._instrument.serial.close()
                 except Exception:
                     pass
                 self._instrument = None
-                time.sleep(2)  # backoff before retry
+                if not self._running:
+                    break  # stop() was called — exit immediately, don't retry
+                time.sleep(2)
                 continue
 
             time.sleep(self.interval)
@@ -151,7 +174,7 @@ def read_power():
     """
     try:
         inst = minimalmodbus.Instrument(PORT, ADDRESS)
-        inst.serial.baudrate = 2400  # DEM730P factory default
+        inst.serial.baudrate = 9600  # confirmed baud for this meter unit
         inst.serial.bytesize = 8
         inst.serial.parity   = 'N'
         inst.serial.stopbits = 1

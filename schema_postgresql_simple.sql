@@ -41,11 +41,12 @@ CREATE TABLE IF NOT EXISTS measurements (
     -- Power metrics
     voltage DOUBLE PRECISION,
     power DOUBLE PRECISION,
-    energy BIGINT,
-    
+    energy DOUBLE PRECISION,
+
     -- Flow metrics
-    flow_rate DOUBLE PRECISION,
-    flow_unit TEXT,
+    flow_lmin DOUBLE PRECISION,
+    flow_hz DOUBLE PRECISION,
+    flow_total DOUBLE PRECISION,
     
     -- Metadata
     created_at TIMESTAMPTZ DEFAULT NOW()

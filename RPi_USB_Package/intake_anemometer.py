@@ -1,17 +1,18 @@
 # intake_anemometer.py
 import os
 import serial
+import time
 
-# ใช้ symlink ที่สร้างจาก udev rules หรือกำหนด USB port โดยตรง
 DEFAULT_PORT = "/dev/ttyUSB2"
 
-def intake_anemometer(serial_port: str = DEFAULT_PORT, baud_rate: int = 9600):
+def intake_anemometer(serial_port: str = DEFAULT_PORT, baud_rate: int = 9600, timeout: int = 2):
     """อ่าน 1 packet จาก intake anemometer และ decode ค่า (humidity, temperature, velocity, unit)."""
     if not os.path.exists(serial_port):
         raise FileNotFoundError(f"[Intake Anemometer] Serial port not found: {serial_port}")
 
-    ser = serial.Serial(serial_port, baud_rate, timeout=1)
+    ser = serial.Serial(serial_port, baud_rate, timeout=0.2)
     buffer = b''
+    start_time = time.time()
 
     def decode_velocity(bytes_9_to_14):
         v1 = (bytes_9_to_14[0] << 8) + bytes_9_to_14[1]
@@ -54,6 +55,10 @@ def intake_anemometer(serial_port: str = DEFAULT_PORT, baud_rate: int = 9600):
 
     try:
         while True:
+            if time.time() - start_time > timeout:
+                print("[Intake] Timeout - no packet received")
+                return None, None, None, "m/s"
+
             buffer += ser.read(ser.in_waiting or 1)
             start = find_start(buffer)
             if start != -1:
@@ -62,8 +67,6 @@ def intake_anemometer(serial_port: str = DEFAULT_PORT, baud_rate: int = 9600):
                     h, t, v, unit = process_packet(pkt)
                     buffer = buffer[start+16:]
                     return h, t, v, unit
-                else:
-                    print("[Intake] Incomplete packet, waiting...")
     except KeyboardInterrupt:
         print("[Intake] Exiting...")
     finally:

@@ -1,0 +1,31 @@
+# Phase 1 — Streaming Foundation
+# Resolved and tested on Python 3.14 / macOS arm64 (June 2026)
+# Install: pip install -r requirements_phase1.txt
+# Requires: Java 11 (brew install openjdk@11) before installing pyspark
+
+# Build tools — must be first; fixes pkg_resources error on Python 3.13+
+setuptools>=70.0
+wheel
+
+# Kafka producer
+kafka-python==3.0.7
+
+# Spark Structured Streaming
+pyspark==3.5.4
+
+# MLflow experiment tracking
+mlflow==3.14.0
+
+# PyArrow — 17+ has Python 3.13/3.14 pre-built wheels
+pyarrow==24.0.0
+
+# Database
+psycopg2-binary==2.9.12
+
+# Data processing
+pandas==2.3.3
+numpy==2.5.0
+
+# Utilities
+python-dotenv==1.2.2
+tqdm==4.68.3

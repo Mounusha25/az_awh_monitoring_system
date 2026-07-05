@@ -220,7 +220,7 @@ class AWHControlPanel(tk.Tk):
         self.sensor_interval = ttk.Combobox(
             sampling,
             values=["1 s", "2 s", "5 s", "10 s", "30 s"],
-            state="disabled",
+            state="readonly",
             width=12
         )
         self.sensor_interval.set("10 s")
@@ -245,7 +245,7 @@ class AWHControlPanel(tk.Tk):
         self.weight_threshold = ttk.Combobox(
             pump,
             values=["1000 g", "1500 g", "2000 g", "3000 g"],
-            state="disabled",
+            state="readonly",
             width=14
         )
         self.weight_threshold.set("2000 g")
@@ -356,7 +356,7 @@ class AWHControlPanel(tk.Tk):
     def update_pump_status(self, status):
         """Receive pump status callback from backend."""
         try:
-            is_on = bool(status)
+            is_on = str(status).strip().upper() in ("1", "ON", "TRUE")
             self.pump_status_label.config(text=f"Pump Status: {'ON' if is_on else 'OFF'}")
         except Exception:
             self.pump_status_label.config(text="Pump Status: OFF")
