@@ -400,11 +400,21 @@ async def export_data(request: BulkExportRequest):
         if request.end_date:
             query = query.where("timestamp", "<=", request.end_date)
 
-        for rdoc in query.limit(settings.max_query_limit).stream():
-            data = _firestore_doc_to_dict(rdoc.to_dict())
-            if request.fields:
-                data = {k: v for k, v in data.items() if k in request.fields or k in ("station_name", "timestamp")}
-            all_readings.append(data)
+        # Paginate through all records — a single .limit(max_query_limit) caps at ~7 days
+        # at 1 reading/minute. Loop in batches until Firestore returns a partial page.
+        page_query = query.limit(settings.max_query_limit)
+        while True:
+            batch = list(page_query.stream())
+            if not batch:
+                break
+            for rdoc in batch:
+                data = _firestore_doc_to_dict(rdoc.to_dict())
+                if request.fields:
+                    data = {k: v for k, v in data.items() if k in request.fields or k in ("station_name", "timestamp")}
+                all_readings.append(data)
+            if len(batch) < settings.max_query_limit:
+                break
+            page_query = query.start_after(batch[-1]).limit(settings.max_query_limit)
 
     if not all_readings:
         raise HTTPException(status_code=404, detail="No data found matching the criteria")
@@ -512,11 +522,20 @@ async def get_hourly_aggregation(
     if end_date:
         readings_ref = readings_ref.where("timestamp", "<=", end_date)
 
-    docs = list(readings_ref.limit(settings.max_query_limit).stream())
-    if not docs:
-        raise HTTPException(status_code=404, detail=f"No readings found for '{station_name}' in the given range")
+    # Paginate through all readings — single .limit() caps at ~7 days at 1 reading/minute
+    raw = []
+    page_query = readings_ref.limit(settings.max_query_limit)
+    while True:
+        batch = list(page_query.stream())
+        if not batch:
+            break
+        raw.extend(_firestore_doc_to_dict(d.to_dict()) for d in batch)
+        if len(batch) < settings.max_query_limit:
+            break
+        page_query = readings_ref.start_after(batch[-1]).limit(settings.max_query_limit)
 
-    raw = [_firestore_doc_to_dict(d.to_dict()) for d in docs]
+    if not raw:
+        raise HTTPException(status_code=404, detail=f"No readings found for '{station_name}' in the given range")
 
     # Group by hour bucket
     from collections import defaultdict
