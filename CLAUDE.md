@@ -111,23 +111,29 @@ az_awh_monitoring_system/
 │       ├── .env.example               ← Required environment variables template
 │       └── REDIS_CACHING.md           ← Redis setup and caching documentation
 │
-├── RPi_USB_Package/                   ← Raspberry Pi hardware edge layer
-│   ├── AquaPars1.py                   ← Main station runtime / orchestrator
+├── RPi_USB_Package/                   ← Raspberry Pi hardware edge layer (flat layout — no subfolders)
+│   ├── AquaPars1.py                   ← Main station runtime / orchestrator (uses read_power.py)
+│   ├── AquaPars1_new_pm.py            ← Station runtime variant (uses read_power_new.py / DEM730P Modbus)
 │   ├── awh_ui_layout.py               ← Local operator UI on the Pi
-│   ├── intake_anemometer.py           ← Intake air: temp, humidity, velocity (ttyUSB2)
-│   ├── outtake_anemometer.py          ← Outtake air: temp, humidity, velocity (ttyUSB3)
-│   ├── read_balance.py                ← Water weight from balance scale (ttyUSB0)
+│   ├── intake_anemometer.py           ← Intake air: temp, humidity, velocity (auto-detects CP2102 by-id)
+│   ├── outtake_anemometer.py          ← Outtake air: temp, humidity, velocity (auto-detects CP2102 by-id)
+│   ├── read_balance.py                ← Water weight from balance scale (auto-detects Prolific/Dtech by-id)
 │   ├── read_flow.py                   ← Flow rate via GPIO pulse counting (GPIO 27)
-│   ├── read_power.py                  ← Voltage, current, power, energy
+│   ├── read_power.py                  ← Older power meter reader (Prolific adapter, hardcoded path)
+│   ├── read_power_new.py              ← DEM730P power meter via RS485 Modbus RTU (auto-detects FTDI by-id)
 │   ├── pump_controller.py             ← Pump on/off control
 │   ├── RASPBERRY_PI_COMMANDS.txt      ← Pi-specific setup and operational commands
 │   ├── sim_run_on_mac.py              ← Simulates full station run without hardware
 │   ├── test_on_mac.py                 ← Unit tests runnable on Mac without Pi
-│   └── test_system/                   ← Individual sensor test scripts
-│       ├── test_intake_anemometer.py
-│       ├── test_outtake_anemometer.py
-│       ├── test_balance.py
-│       └── test_flow.py
+│   ├── test_balance.py                ← Individual sensor test script
+│   ├── test_flow.py                   ← Individual sensor test script
+│   ├── test_pump.py                   ← Individual sensor test script
+│   ├── test_powermeter.py             ← Tests read_power.py
+│   ├── test_powermeter_new.py         ← Tests read_power_new.py
+│   ├── test_intake_anememoter.py      ← Tests intake_anemometer.py (filename typo, kept as-is on purpose)
+│   ├── test_outtaketake_anememoter.py ← Tests outtake_anemometer.py (filename typo, kept as-is on purpose)
+│   ├── debug_powermeter.py            ← Raw Modbus byte-level diagnostic for DEM730P
+│   └── scan_powermeter.py             ← Modbus address discovery for DEM730P
 │
 └── guides/                            ← Human-readable documentation hub
     ├── ARCHITECTURE.md
@@ -390,11 +396,11 @@ npm run dev            # runs on localhost:3000
 ```bash
 cd RPi_USB_Package
 python AquaPars1.py    # full station runtime
-# or test individual sensors:
-python test_system/test_balance.py
-python test_system/test_intake_anemometer.py
-python test_system/test_outtake_anemometer.py
-python test_system/test_flow.py
+# or test individual sensors (flat layout, no test_system/ subfolder):
+python test_balance.py
+python test_intake_anememoter.py
+python test_outtaketake_anememoter.py
+python test_flow.py
 ```
 
 ---

@@ -14,11 +14,31 @@ import time
 import threading
 import os
 
-# Stable symlink that survives reboots regardless of plug-in order.
-# Find yours with: ls /dev/serial/by-id/
-# Falls back to /dev/ttyUSB1 if symlink is not present.
-DEFAULT_PORT = "/dev/serial/by-id/usb-FTDI_USB_Serial_Device-if00-port0"
-PORT    = DEFAULT_PORT if os.path.exists(DEFAULT_PORT) else '/dev/ttyUSB1'
+BY_ID_DIR = "/dev/serial/by-id"
+FTDI_MATCH_SUBSTRING = "FTDI"  # power meter is the only FTDI adapter on this station
+
+
+def find_power_meter_port():
+    """
+    Auto-detect the power meter's FTDI USB-RS485 adapter via /dev/serial/by-id.
+
+    /dev/ttyUSBx numbers are reassigned by plug-in order at every boot, so
+    hard-coding one (e.g. ttyUSB1) can silently bind to a different sensor
+    (balance, anemometer) after a reboot/replug. by-id symlinks are keyed to
+    the adapter's USB identity and stay stable regardless of enumeration order.
+    Returns None if no FTDI adapter is currently present.
+    """
+    if not os.path.isdir(BY_ID_DIR):
+        return None
+    try:
+        entries = sorted(os.listdir(BY_ID_DIR))
+    except OSError:
+        return None
+    candidates = [os.path.join(BY_ID_DIR, name) for name in entries if FTDI_MATCH_SUBSTRING in name]
+    return candidates[0] if candidates else None
+
+
+PORT    = find_power_meter_port()
 ADDRESS = 1                # last 2 digits of serial number — new meter serial ends in 01
 
 
@@ -35,7 +55,7 @@ class PowerMeterReader:
         Initialize the power meter reader.
 
         Args:
-            port: Serial port (default: by-id symlink, fallback /dev/ttyUSB1)
+            port: Serial port (default: auto-detected FTDI adapter via /dev/serial/by-id)
             baudrate: Baud rate (default: 2400 — DEM730P factory default per installation guide)
             address: Modbus address (default: 99 — confirmed from meter LCD)
             interval: Poll interval in seconds (default: 10)
@@ -43,9 +63,12 @@ class PowerMeterReader:
                       DEM730P via RS485 only exposes energy → (None, None, None, energy_kwh)
             timeout: Serial timeout in seconds (default: 2)
         """
-        self.port = port or PORT
-        if not os.path.exists(self.port):
-            raise RuntimeError(f"[Power] Port not found: {self.port} — run: ls /dev/serial/by-id/ or ls /dev/ttyUSB*")
+        self.port = port or PORT or find_power_meter_port()
+        if not self.port or not os.path.exists(self.port):
+            raise RuntimeError(
+                "[Power] FTDI power meter adapter not found under /dev/serial/by-id — "
+                "check the USB cable is connected and run: ls /dev/serial/by-id/"
+            )
         self.baudrate = baudrate
         self.address = address
         self.interval = int(interval)
@@ -172,8 +195,13 @@ def read_power():
 
         Returns all None values on communication error.
     """
+    port = find_power_meter_port()
+    if not port:
+        print("[Power Meter Error] FTDI adapter not found under /dev/serial/by-id — check cable and run: ls /dev/serial/by-id/")
+        return {'energy': None, 'power': None, 'voltage': None, 'current': None}
+
     try:
-        inst = minimalmodbus.Instrument(PORT, ADDRESS)
+        inst = minimalmodbus.Instrument(port, ADDRESS)
         inst.serial.baudrate = 9600  # confirmed baud for this meter unit
         inst.serial.bytesize = 8
         inst.serial.parity   = 'N'
@@ -211,8 +239,8 @@ def read_power():
 if __name__ == "__main__":
     # Quick test when run directly
     print("Testing DEM730P power meter via RS485...")
-    print(f"Using port: {PORT}")
-    print("To find your port: ls /dev/serial/by-id/  or  ls /dev/ttyUSB*")
+    print(f"Using port: {find_power_meter_port()}")
+    print("To find your port: ls /dev/serial/by-id/")
     print("-" * 50)
 
     data = read_power()

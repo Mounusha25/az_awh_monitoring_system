@@ -3,10 +3,48 @@ import os
 import serial
 import time
 
-DEFAULT_PORT = "/dev/ttyUSB2"
+# Both anemometers use identical Silicon Labs CP2102 chips, so by-id names
+# can't be told apart by content alone (unlike the power meter's unique FTDI
+# adapter or the balance's unique Prolific adapter). We list all CP2102
+# by-id entries (sorted, so order is stable across runs) and assign this one
+# index 0 (intake) / outtake_anemometer.py takes index 1.
+# ttyUSBx numbers are NOT used directly because they get reassigned by
+# plug-in order at every boot.
+#
+# IMPORTANT: verify this assignment against the physical sensors after any
+# reboot/replug — if intake/outtake readings look swapped, flip
+# ANEMOMETER_INDEX to 1 here (and to 0 in outtake_anemometer.py).
+BY_ID_DIR = "/dev/serial/by-id"
+CP210X_MATCH_SUBSTRING = "CP2102"
+ANEMOMETER_INDEX = 0
+DEFAULT_PORT = "/dev/ttyUSB2"  # fallback only, used if by-id lookup fails
 
-def intake_anemometer(serial_port: str = DEFAULT_PORT, baud_rate: int = 9600, timeout: int = 2):
+
+def find_anemometer_ports():
+    if not os.path.isdir(BY_ID_DIR):
+        return []
+    try:
+        entries = sorted(os.listdir(BY_ID_DIR))
+    except OSError:
+        return []
+    return [os.path.join(BY_ID_DIR, name) for name in entries if CP210X_MATCH_SUBSTRING in name]
+
+
+def find_intake_port():
+    candidates = find_anemometer_ports()
+    if len(candidates) > ANEMOMETER_INDEX:
+        port = candidates[ANEMOMETER_INDEX]
+        print(f"[Intake] Auto-detected port: {port} (of {len(candidates)} CP2102 adapters found)")
+        return port
+    print(f"[Intake] Could not auto-detect via by-id ({len(candidates)} CP2102 adapters found), "
+          f"falling back to {DEFAULT_PORT}")
+    return DEFAULT_PORT
+
+
+def intake_anemometer(serial_port: str = None, baud_rate: int = 9600, timeout: int = 2):
     """อ่าน 1 packet จาก intake anemometer และ decode ค่า (humidity, temperature, velocity, unit)."""
+    if serial_port is None:
+        serial_port = find_intake_port()
     if not os.path.exists(serial_port):
         raise FileNotFoundError(f"[Intake Anemometer] Serial port not found: {serial_port}")
 
@@ -67,7 +105,5 @@ def intake_anemometer(serial_port: str = DEFAULT_PORT, baud_rate: int = 9600, ti
                     h, t, v, unit = process_packet(pkt)
                     buffer = buffer[start+16:]
                     return h, t, v, unit
-    except KeyboardInterrupt:
-        print("[Intake] Exiting...")
     finally:
         ser.close()

@@ -21,12 +21,31 @@ import struct
 import time
 
 # ── Port detection ────────────────────────────────────────────────────────────
-DEFAULT_BY_ID = "/dev/serial/by-id/usb-Prolific_Technology_Inc._USB-Serial_Controller_D-if00-port0"
-FALLBACK      = "/dev/ttyUSB1"
+# Power meter uses an FTDI adapter (balance uses Prolific, anemometers use cp210x).
+# by-id symlinks stay stable across reboots; raw ttyUSBx numbers do not.
+BY_ID_DIR = "/dev/serial/by-id"
+FTDI_MATCH_SUBSTRING = "FTDI"
 
-PORT    = sys.argv[1] if len(sys.argv) > 1 else (DEFAULT_BY_ID if os.path.exists(DEFAULT_BY_ID) else FALLBACK)
+
+def find_power_meter_port():
+    if not os.path.isdir(BY_ID_DIR):
+        return None
+    try:
+        entries = sorted(os.listdir(BY_ID_DIR))
+    except OSError:
+        return None
+    candidates = [os.path.join(BY_ID_DIR, name) for name in entries if FTDI_MATCH_SUBSTRING in name]
+    return candidates[0] if candidates else None
+
+
+PORT    = sys.argv[1] if len(sys.argv) > 1 else find_power_meter_port()
 BAUD    = 9600
 ADDRESS = 1
+
+if not PORT:
+    print("[ERROR] FTDI power meter adapter not found under /dev/serial/by-id/")
+    print("        Run: ls /dev/serial/by-id/  to see connected adapters")
+    sys.exit(1)
 
 # ── CRC16 (standard Modbus) ───────────────────────────────────────────────────
 def crc16(data: bytes) -> int:

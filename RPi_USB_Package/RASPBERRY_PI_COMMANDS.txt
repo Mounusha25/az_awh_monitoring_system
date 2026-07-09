@@ -38,7 +38,7 @@ sudo usermod -a -G dialout $USER
 STEP 2: TEST INDIVIDUAL SENSORS
 ===============================================
 
-cd ~/RPi_USB_Package/test_system
+cd ~/RPi_USB_Package
 
 # Test each sensor (Ctrl+C to stop each test):
 

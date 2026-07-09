@@ -5,15 +5,48 @@ import os
 import serial
 import time
 
-# Use udev symlink for stable device path or USB port
-DEFAULT_PORT = "/dev/ttyUSB0"
+# Both anemometers use identical Silicon Labs CP2102 chips — see the
+# matching comment in intake_anemometer.py. This module takes index 1
+# (intake takes index 0) out of the sorted by-id CP2102 list.
+#
+# IMPORTANT: verify this assignment against the physical sensors after any
+# reboot/replug — if intake/outtake readings look swapped, flip
+# ANEMOMETER_INDEX to 0 here (and to 1 in intake_anemometer.py).
+BY_ID_DIR = "/dev/serial/by-id"
+CP210X_MATCH_SUBSTRING = "CP2102"
+ANEMOMETER_INDEX = 1
+DEFAULT_PORT = "/dev/ttyUSB0"  # fallback only, used if by-id lookup fails
 
-def outtake_anemometer(serial_port: str = DEFAULT_PORT, baud_rate: int = 9600, timeout: int = 2):
+
+def find_anemometer_ports():
+    if not os.path.isdir(BY_ID_DIR):
+        return []
+    try:
+        entries = sorted(os.listdir(BY_ID_DIR))
+    except OSError:
+        return []
+    return [os.path.join(BY_ID_DIR, name) for name in entries if CP210X_MATCH_SUBSTRING in name]
+
+
+def find_outtake_port():
+    candidates = find_anemometer_ports()
+    if len(candidates) > ANEMOMETER_INDEX:
+        port = candidates[ANEMOMETER_INDEX]
+        print(f"[Outtake] Auto-detected port: {port} (of {len(candidates)} CP2102 adapters found)")
+        return port
+    print(f"[Outtake] Could not auto-detect via by-id ({len(candidates)} CP2102 adapters found), "
+          f"falling back to {DEFAULT_PORT}")
+    return DEFAULT_PORT
+
+
+def outtake_anemometer(serial_port: str = None, baud_rate: int = 9600, timeout: int = 2):
     """
     Read one packet from outtake anemometer and decode
     humidity (%), temperature (°C), velocity, and unit.
     If timeout expires, return (None, None, None, "m/s").
     """
+    if serial_port is None:
+        serial_port = find_outtake_port()
     if not os.path.exists(serial_port):
         print(f"[Outtake Anemometer] Serial port not found: {serial_port}")
         return None, None, None, "m/s"

@@ -244,7 +244,7 @@ class AWHControlPanel(tk.Tk):
         ttk.Label(pump, text="Weight Threshold").grid(row=0, column=0, sticky="w")
         self.weight_threshold = ttk.Combobox(
             pump,
-            values=["1000 g", "1500 g", "2000 g", "3000 g"],
+            values=["1000 g", "1500 g", "2000 g", "3000 g", "5000 g", "6000 g"],
             state="readonly",
             width=14
         )
@@ -254,7 +254,7 @@ class AWHControlPanel(tk.Tk):
         ttk.Label(pump, text="Pump Duration").grid(row=1, column=0, sticky="w")
         self.pump_duration = ttk.Combobox(
             pump,
-            values=["1 min", "2 min", "3 min", "4 min", "5 min"],
+            values=["1 min", "2 min", "3 min", "4 min", "5 min", "6 min"],
             state="disabled",
             width=12
         )
