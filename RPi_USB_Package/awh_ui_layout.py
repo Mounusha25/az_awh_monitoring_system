@@ -230,7 +230,7 @@ class AWHControlPanel(tk.Tk):
         self.file_interval = ttk.Combobox(
             sampling,
             values=["1 hr", "2 hr", "4 hr", "6 hr"],
-            state="disabled",
+            state="readonly",
             width=12
         )
         self.file_interval.set("1 hr")
@@ -255,7 +255,7 @@ class AWHControlPanel(tk.Tk):
         self.pump_duration = ttk.Combobox(
             pump,
             values=["1 min", "2 min", "3 min", "4 min", "5 min", "6 min"],
-            state="disabled",
+            state="readonly",
             width=12
         )
         self.pump_duration.set("2 min")

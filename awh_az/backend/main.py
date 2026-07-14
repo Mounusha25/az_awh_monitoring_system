@@ -617,13 +617,13 @@ async def get_hourly_aggregation(
         else:
             row["water_produced_g"] = None
 
-        # Energy consumed per hour (delta energy in Wh → kWh)
+        # Energy consumed per hour (delta energy, already stored in kWh by all
+        # station readers — see CLAUDE.md data model)
         energies = [(r.get("timestamp", ""), r.get("energy")) for r in readings_in_hour
                      if isinstance(r.get("energy"), (int, float))]
         if len(energies) >= 2:
             energies.sort(key=lambda x: x[0])
-            energy_delta_wh = energies[-1][1] - energies[0][1]
-            energy_kwh = energy_delta_wh / 1000.0
+            energy_kwh = energies[-1][1] - energies[0][1]
             row["energy_consumed_kWh"] = round(energy_kwh, 4)
         else:
             row["energy_consumed_kWh"] = None

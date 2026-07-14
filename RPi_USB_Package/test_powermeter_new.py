@@ -2,8 +2,8 @@
 import time
 from read_power_new import PowerMeterReader
 
-def handle_power(v, a, w, wh):
-    print(f"Voltage={v} V | Current={a} A | Power={w} W | Energy={wh} Wh")
+def handle_power(v, a, w, kwh):
+    print(f"Voltage={v} V | Current={a} A | Power={w} W | Energy={kwh} kWh")
 
 def main():
     print("Starting power meter reader... Press Ctrl+C to stop.")

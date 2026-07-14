@@ -5,36 +5,32 @@ import os
 import serial
 import time
 
-# Both anemometers use identical Silicon Labs CP2102 chips — see the
-# matching comment in intake_anemometer.py. This module takes index 1
-# (intake takes index 0) out of the sorted by-id CP2102 list.
+# Both anemometers use identical Silicon Labs CP2102 adapters that ship with
+# the same factory serial number, so /dev/serial/by-id/ can't tell them apart
+# — see the matching comment in intake_anemometer.py. /dev/serial/by-path/
+# identifies devices by physical USB port location instead, which is stable
+# as long as this cable stays in the same physical port on this station.
 #
-# IMPORTANT: verify this assignment against the physical sensors after any
-# reboot/replug — if intake/outtake readings look swapped, flip
-# ANEMOMETER_INDEX to 0 here (and to 1 in intake_anemometer.py).
-BY_ID_DIR = "/dev/serial/by-id"
-CP210X_MATCH_SUBSTRING = "CP2102"
-ANEMOMETER_INDEX = 1
-DEFAULT_PORT = "/dev/ttyUSB0"  # fallback only, used if by-id lookup fails
-
-
-def find_anemometer_ports():
-    if not os.path.isdir(BY_ID_DIR):
-        return []
-    try:
-        entries = sorted(os.listdir(BY_ID_DIR))
-    except OSError:
-        return []
-    return [os.path.join(BY_ID_DIR, name) for name in entries if CP210X_MATCH_SUBSTRING in name]
+# IMPORTANT: this substring is specific to this station's wiring. If the
+# cable is ever moved to a different physical USB port, or on a different
+# station, re-check with `ls -la /dev/serial/by-path/` and update it.
+BY_PATH_DIR = "/dev/serial/by-path"
+OUTTAKE_BY_PATH_SUBSTRING = "usb-0:1.1:1.0"
+DEFAULT_PORT = "/dev/ttyUSB0"  # fallback only, used if by-path lookup fails
 
 
 def find_outtake_port():
-    candidates = find_anemometer_ports()
-    if len(candidates) > ANEMOMETER_INDEX:
-        port = candidates[ANEMOMETER_INDEX]
-        print(f"[Outtake] Auto-detected port: {port} (of {len(candidates)} CP2102 adapters found)")
-        return port
-    print(f"[Outtake] Could not auto-detect via by-id ({len(candidates)} CP2102 adapters found), "
+    if os.path.isdir(BY_PATH_DIR):
+        try:
+            entries = sorted(os.listdir(BY_PATH_DIR))
+        except OSError:
+            entries = []
+        for name in entries:
+            if OUTTAKE_BY_PATH_SUBSTRING in name:
+                port = os.path.join(BY_PATH_DIR, name)
+                print(f"[Outtake] Auto-detected port via by-path: {port}")
+                return port
+    print(f"[Outtake] Could not find by-path match for '{OUTTAKE_BY_PATH_SUBSTRING}', "
           f"falling back to {DEFAULT_PORT}")
     return DEFAULT_PORT
 

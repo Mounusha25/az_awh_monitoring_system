@@ -3,40 +3,33 @@ import os
 import serial
 import time
 
-# Both anemometers use identical Silicon Labs CP2102 chips, so by-id names
-# can't be told apart by content alone (unlike the power meter's unique FTDI
-# adapter or the balance's unique Prolific adapter). We list all CP2102
-# by-id entries (sorted, so order is stable across runs) and assign this one
-# index 0 (intake) / outtake_anemometer.py takes index 1.
-# ttyUSBx numbers are NOT used directly because they get reassigned by
-# plug-in order at every boot.
+# Both anemometers use identical Silicon Labs CP2102 adapters that ship with
+# the same factory serial number, so /dev/serial/by-id/ can't tell them apart
+# (Linux collapses both to a single by-id entry, silently hiding the other).
+# /dev/serial/by-path/ instead identifies devices by physical USB port
+# location, which is stable as long as this cable stays in the same physical
+# port on this station — confirmed distinct entries for both anemometers.
 #
-# IMPORTANT: verify this assignment against the physical sensors after any
-# reboot/replug — if intake/outtake readings look swapped, flip
-# ANEMOMETER_INDEX to 1 here (and to 0 in outtake_anemometer.py).
-BY_ID_DIR = "/dev/serial/by-id"
-CP210X_MATCH_SUBSTRING = "CP2102"
-ANEMOMETER_INDEX = 0
-DEFAULT_PORT = "/dev/ttyUSB2"  # fallback only, used if by-id lookup fails
-
-
-def find_anemometer_ports():
-    if not os.path.isdir(BY_ID_DIR):
-        return []
-    try:
-        entries = sorted(os.listdir(BY_ID_DIR))
-    except OSError:
-        return []
-    return [os.path.join(BY_ID_DIR, name) for name in entries if CP210X_MATCH_SUBSTRING in name]
+# IMPORTANT: this substring is specific to this station's wiring. If the
+# cable is ever moved to a different physical USB port, or on a different
+# station, re-check with `ls -la /dev/serial/by-path/` and update it.
+BY_PATH_DIR = "/dev/serial/by-path"
+INTAKE_BY_PATH_SUBSTRING = "usb-0:1.2:1.0"
+DEFAULT_PORT = "/dev/ttyUSB2"  # fallback only, used if by-path lookup fails
 
 
 def find_intake_port():
-    candidates = find_anemometer_ports()
-    if len(candidates) > ANEMOMETER_INDEX:
-        port = candidates[ANEMOMETER_INDEX]
-        print(f"[Intake] Auto-detected port: {port} (of {len(candidates)} CP2102 adapters found)")
-        return port
-    print(f"[Intake] Could not auto-detect via by-id ({len(candidates)} CP2102 adapters found), "
+    if os.path.isdir(BY_PATH_DIR):
+        try:
+            entries = sorted(os.listdir(BY_PATH_DIR))
+        except OSError:
+            entries = []
+        for name in entries:
+            if INTAKE_BY_PATH_SUBSTRING in name:
+                port = os.path.join(BY_PATH_DIR, name)
+                print(f"[Intake] Auto-detected port via by-path: {port}")
+                return port
+    print(f"[Intake] Could not find by-path match for '{INTAKE_BY_PATH_SUBSTRING}', "
           f"falling back to {DEFAULT_PORT}")
     return DEFAULT_PORT
 

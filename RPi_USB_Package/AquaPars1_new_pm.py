@@ -318,8 +318,17 @@ class BalanceReader:
             ST, GS, check, weight, unit = None, None, None, None, None
             print("[Save] WARNING: No balance data yet")
 
-        if self.power_tuple:
+        power_age_sec = now_ts - self._last_power_ts
+        if self.power_tuple and power_age_sec <= READER_STALE_SEC:
             V, A, W, Wh = self.power_tuple
+        elif self.power_tuple:
+            # Had a reading before, but it's too old to trust — upload None
+            # instead of silently re-sending a frozen number that would look
+            # like real flat consumption (this is what confused Josh when the
+            # power reader got stuck: energy looked unchanged for hours
+            # because we kept re-uploading the last good value).
+            V, A, W, Wh = None, None, None, None
+            print(f"[Save] WARNING: Power meter data is stale ({power_age_sec:.0f}s since last reading) — omitting from upload")
         else:
             V, A, W, Wh = None, None, None, None
             print("[Save] WARNING: No power meter data yet")

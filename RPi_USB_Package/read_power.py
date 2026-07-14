@@ -20,7 +20,7 @@ class PowerMeterReader:
         self.baudrate = baudrate
         self.timeout = timeout
         self.interval = int(interval)
-        self.callback = callback  # receives tuple (V, A, W, Wh)
+        self.callback = callback  # receives tuple (V, A, W, kWh)
         self._ser = None
         self._running = False
         self._thread = None
@@ -86,7 +86,10 @@ class PowerMeterReader:
             voltage = round(voltage_raw * 0.1, 3)
             current = round((current_high_raw * 65536 + current_low_raw) * 0.001, 3)
             power = round((power_high_raw * 65536 + power_low_raw) * 0.1, 3)
-            energy = round(energy_raw * 1, 3)
+            # energy_raw is in Wh; convert to kWh so all stations report energy
+            # in the same unit (see CLAUDE.md data model / matching fix in
+            # read_power_new.py).
+            energy = round(energy_raw / 1000.0, 3)
             return voltage, current, power, energy
         except Exception as e:
             print(f"[Power] Parse error: {e}")

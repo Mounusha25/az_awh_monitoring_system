@@ -88,8 +88,20 @@ class PowerMeterReader:
         print(f"[Power] Started polling on {self.port}")
 
     def stop(self):
-        """Stop the background polling thread."""
+        """Stop the background polling thread.
+
+        Waits for the background thread to fully exit before returning.
+        Without this, a caller (e.g. the watchdog's restart logic) can start
+        a brand-new reader on the same port while the old thread is still
+        mid-read/write on it — two threads touching the same serial device
+        at once can produce exactly the kind of intermittent RS485 ioctl
+        failures we saw in production, which only cleared on a full process
+        restart (guaranteed no leftover thread) rather than a watchdog-driven
+        in-process restart (no such guarantee).
+        """
         self._running = False
+        if self._thread and self._thread.is_alive():
+            self._thread.join(timeout=self.timeout + 3)
         try:
             if self._instrument:
                 self._instrument.serial.close()
@@ -143,9 +155,15 @@ class PowerMeterReader:
                         time.sleep(2)  # backoff before retry
                         continue
 
-                # Read total energy from register 0x0000 (2 words, function code 3)
-                # Returns integer — multiply by 0.01 to get kWh
-                raw = self._instrument.read_long(
+                # Read total energy from register 0x0000 (single 16-bit word, function code 3).
+                # Confirmed on-site 2026-07-14: raw=8024, meter LCD=80.2 kWh -> raw * 0.01 matches.
+                # NOTE: previously this used read_long() to combine 0x0000+0x0001 into a 32-bit
+                # value, assuming 0x0000 was the high word. That was backwards — 0x0000 holds the
+                # real value and 0x0001 is the (currently unused) high/overflow word — so read_long()
+                # was computing raw_true * 65536, wildly inflating every reading. Reading the single
+                # register directly avoids that. If the station ever logs more than 65535 raw units,
+                # this will need to read register 0x0001 too and combine it as the HIGH word.
+                raw = self._instrument.read_register(
                     0x0000,
                     functioncode=3,
                     signed=False
@@ -209,9 +227,11 @@ def read_power():
         inst.serial.timeout  = 1
         inst.mode            = minimalmodbus.MODE_RTU
 
-        # Official register: address 0x0000, function code 3, 2 words
-        # Returns integer — multiply by 0.01 to get kWh
-        raw = inst.read_long(
+        # Official register: address 0x0000, single 16-bit word, function code 3.
+        # See the matching comment in PowerMeterReader._run() — read_long() over
+        # two words was combining them in the wrong order and inflating the
+        # result by 65536x. Confirmed on-site: raw * 0.01 matches the meter's LCD.
+        raw = inst.read_register(
             0x0000,
             functioncode=3,
             signed=False
