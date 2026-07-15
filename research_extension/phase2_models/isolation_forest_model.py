@@ -11,33 +11,22 @@ Per-feature scores are z-normalized against that same model's score
 distribution on the training normal set, so all 10 features land on a
 comparable scale before taking the max (detection) / argmax (attribution)
 across features.
+
+Note: using max-across-10-features directly for detection suffers from a
+multiple-comparisons effect (the max of 10 noisy scores is inflated even on
+purely normal data) — see joint_detector.py for the detection model used in
+two_stage_model.py. This ensemble's `feature_scores()` is still the
+attribution signal: it's only asked "which feature looks worst" for windows
+another model has already flagged as anomalous.
 """
 
 from __future__ import annotations
 
-import numpy as np
 import pandas as pd
 from sklearn.ensemble import IsolationForest
 
 from build_benchmark_dataset import FEATURE_COLUMNS
-
-STAT_SUFFIXES = ["mean", "std", "min", "max"]
-
-
-def _stat_columns(feature: str) -> list[str]:
-    return [f"{feature}_{s}" for s in STAT_SUFFIXES]
-
-
-def _prepare(df: pd.DataFrame, feature: str, fill_values: dict[str, float] | None = None) -> pd.DataFrame:
-    cols = _stat_columns(feature)
-    x = df[cols].copy()
-    # std is NaN for single-reading windows (record_count == 1) — zero variance
-    x[f"{feature}_std"] = x[f"{feature}_std"].fillna(0.0)
-    if fill_values is None:
-        fill_values = {c: x[c].mean() for c in cols}
-    for c in cols:
-        x[c] = x[c].fillna(fill_values[c])
-    return x, fill_values
+from data_prep import prepare_columns, stat_columns
 
 
 class IsolationForestEnsemble:
@@ -53,7 +42,7 @@ class IsolationForestEnsemble:
     def fit(self, train_df: pd.DataFrame) -> "IsolationForestEnsemble":
         normal = train_df[~train_df["is_anomaly"]]
         for feature in FEATURE_COLUMNS:
-            x, fill_values = _prepare(normal, feature)
+            x, fill_values = prepare_columns(normal, stat_columns(feature))
             self.fill_values_[feature] = fill_values
 
             model = IsolationForest(
@@ -70,17 +59,18 @@ class IsolationForestEnsemble:
             self.score_stds_[feature] = float(raw_scores.std()) or 1.0
         return self
 
-    def _feature_scores(self, df: pd.DataFrame) -> pd.DataFrame:
+    def feature_scores(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Per-feature z-normalized anomaly scores — higher = more anomalous."""
         scores = {}
         for feature in FEATURE_COLUMNS:
-            x, _ = _prepare(df, feature, self.fill_values_[feature])
+            x, _ = prepare_columns(df, stat_columns(feature), self.fill_values_[feature])
             raw = -self.models_[feature].score_samples(x)
             z = (raw - self.score_means_[feature]) / self.score_stds_[feature]
             scores[feature] = z
         return pd.DataFrame(scores, index=df.index)
 
     def predict(self, df: pd.DataFrame) -> pd.DataFrame:
-        scores = self._feature_scores(df)
+        scores = self.feature_scores(df)
         detection_score = scores.max(axis=1)
         causal_parameter = scores.idxmax(axis=1)
 

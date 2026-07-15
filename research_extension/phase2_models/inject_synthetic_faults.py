@@ -97,6 +97,12 @@ def inject_faults(
     if n_rows < 10:
         return out, fault_log
 
+    # Track placed intervals station-wide (not per-column) so that no window
+    # ever has two competing real perturbations — a window with overlapping
+    # faults has an inherently ambiguous "causal_parameter" ground truth.
+    placed_intervals: list[tuple[pd.Timestamp, pd.Timestamp]] = []
+    max_placement_attempts = 20
+
     for _ in range(n_faults):
         fault_type = rng.choice(FAULT_TYPES)
         column = rng.choice(feature_columns)
@@ -107,13 +113,31 @@ def inject_faults(
             continue
 
         duration_min = _duration_minutes(fault_type, rng)
-        start_idx = int(rng.integers(0, n_rows - 1))
-        start_time = out.loc[start_idx, time_col]
-        end_time = start_time + pd.Timedelta(minutes=duration_min)
 
-        mask = (out[time_col] >= start_time) & (out[time_col] < end_time)
-        if mask.sum() < 2:
-            continue
+        start_time = end_time = mask = None
+        for _attempt in range(max_placement_attempts):
+            start_idx = int(rng.integers(0, n_rows - 1))
+            candidate_start = out.loc[start_idx, time_col]
+            candidate_end = candidate_start + pd.Timedelta(minutes=duration_min)
+
+            overlaps = any(
+                candidate_start < placed_end and placed_start < candidate_end
+                for placed_start, placed_end in placed_intervals
+            )
+            if overlaps:
+                continue
+
+            candidate_mask = (out[time_col] >= candidate_start) & (out[time_col] < candidate_end)
+            if candidate_mask.sum() < 2:
+                continue
+
+            start_time, end_time, mask = candidate_start, candidate_end, candidate_mask
+            break
+
+        if start_time is None:
+            continue  # no non-overlapping placement found after max attempts — skip this fault
+
+        placed_intervals.append((start_time, end_time))
 
         col_std = col_series.std(skipna=True)
         col_std = col_std if col_std and col_std > 0 else abs(col_series.mean(skipna=True)) * 0.1 or 1.0

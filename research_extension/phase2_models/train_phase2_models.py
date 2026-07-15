@@ -27,9 +27,12 @@ from build_benchmark_dataset import DATA_DIR, TRACKING_URI
 from evaluate import evaluate_model, tune_threshold
 from isolation_forest_model import IsolationForestEnsemble
 from rule_baseline import RuleBasedBaseline
+from supervised_classifier import SupervisedAttributionModel
+from two_stage_model import TwoStageModel
 
 MODELS_DIR = os.path.join(DATA_DIR, "models")
 THRESHOLD_CANDIDATES = np.arange(0.5, 6.25, 0.25)
+CLASSIFIER_THRESHOLD_CANDIDATES = np.arange(0.05, 1.0, 0.05)  # probability scale, not z-score
 
 RQ1_TARGET_F1 = 0.80
 RQ1_BASELINE_F1_CEILING = 0.65
@@ -85,17 +88,43 @@ def main():
             {"n_estimators": iso_forest.n_estimators})
     results["isolation_forest"] = iso_metrics
 
+    # --- Two-stage: joint detector (avoids max-of-10 inflation) + conditional per-feature attribution ---
+    two_stage = TwoStageModel().fit(train_df)
+    best_thresh, val_f1 = tune_threshold(two_stage, val_df, THRESHOLD_CANDIDATES)
+    two_stage_metrics = evaluate_model(two_stage, test_df)
+    print(f"[Phase2] Two-stage model — threshold={best_thresh:.2f} (val F1={val_f1:.3f}) "
+          f"test_detection_f1={two_stage_metrics['detection_f1']:.3f} "
+          f"test_attribution_f1={two_stage_metrics['attribution_f1']:.3f}")
+    joblib.dump(two_stage, os.path.join(MODELS_DIR, "two_stage_model.joblib"))
+    log_run("phase2-two-stage", "joint_detector_plus_conditional_attribution", best_thresh, two_stage_metrics,
+            {"n_estimators": two_stage.n_estimators})
+    results["two_stage"] = two_stage_metrics
+
+    # --- Supervised classifier: one joint model trained directly on causal_parameter labels ---
+    classifier = SupervisedAttributionModel().fit(train_df)
+    best_thresh, val_f1 = tune_threshold(classifier, val_df, CLASSIFIER_THRESHOLD_CANDIDATES)
+    classifier_metrics = evaluate_model(classifier, test_df)
+    print(f"[Phase2] Supervised classifier — threshold={best_thresh:.2f} (val F1={val_f1:.3f}) "
+          f"test_detection_f1={classifier_metrics['detection_f1']:.3f} "
+          f"test_attribution_f1={classifier_metrics['attribution_f1']:.3f}")
+    joblib.dump(classifier, os.path.join(MODELS_DIR, "supervised_classifier.joblib"))
+    log_run("phase2-supervised-classifier", "random_forest_multiclass", best_thresh, classifier_metrics,
+            {"n_estimators": classifier.n_estimators})
+    results["supervised_classifier"] = classifier_metrics
+
     # --- Comparison against RQ1 targets ---
     print("\n[Phase2] RQ1 comparison:")
     print(f"  Target attribution F1:            > {RQ1_TARGET_F1}")
     print(f"  Rule-based baseline ceiling:       < {RQ1_BASELINE_F1_CEILING}")
     print(f"  Rule-based baseline attribution F1:  {results['rule_baseline']['attribution_f1']:.3f}")
     print(f"  Isolation Forest attribution F1:     {results['isolation_forest']['attribution_f1']:.3f}")
+    print(f"  Two-stage attribution F1:            {results['two_stage']['attribution_f1']:.3f}")
+    print(f"  Supervised classifier attribution F1: {results['supervised_classifier']['attribution_f1']:.3f}")
 
-    # --- Spot check: does per-feature scoring pick the right causal parameter? ---
-    print("\n[Phase2] Spot check (Isolation Forest attribution on true anomalies):")
+    # --- Spot check: does the supervised classifier pick the right causal parameter? ---
+    print("\n[Phase2] Spot check (supervised classifier attribution on true anomalies):")
     anomalous_test = test_df[test_df["is_anomaly"]].sample(min(5, test_df["is_anomaly"].sum()), random_state=1)
-    spot_preds = iso_forest.predict(anomalous_test)
+    spot_preds = classifier.predict(anomalous_test)
     for idx in anomalous_test.index:
         true_param = test_df.loc[idx, "causal_parameter"]
         pred_param = spot_preds.loc[idx, "causal_parameter_pred"]

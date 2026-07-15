@@ -6,11 +6,20 @@ Builds the labeled train/val/test dataset that Phase 2 model training
 
 Real station data has no anomaly or attribution labels, so this script
 injects synthetic faults (see inject_synthetic_faults.py) into real raw
-readings at known times/parameters, then recomputes the exact same
-30-min/5-min sliding-window statistics Phase 1's Spark consumer computes
+readings at known times/parameters, then aggregates over the same 30-min/
+5-min sliding windows Phase 1's Spark consumer uses
 (research_extension/phase1_streaming/consumer.py::build_agg_exprs) — in
 pandas, so this script has no Kafka/Spark dependency and can run standalone
 against PostgreSQL directly.
+
+Note: unlike consumer.py's windowed_features table (absolute mean/std/min/
+max), this benchmark expresses every stat relative to a trailing per-
+station/per-feature baseline (see compute_windows) — absolute values don't
+generalize across a time-based split for non-stationary features like
+cumulative energy, and aren't comparable across features for per-feature
+anomaly scoring. If Phase 1's production schema is ever used to feed a
+trained Phase 2 model directly, it will need the same relative transform
+applied downstream, not just consumed as-is.
 
 Because only the targeted column is perturbed per injected fault, that
 column is the unambiguous ground-truth causal parameter for every window
@@ -97,14 +106,69 @@ def candidate_window_starts(times: pd.Series) -> np.ndarray:
     return np.sort(starts.unique())
 
 
-def compute_windows(df: pd.DataFrame, station_id: int, starts: np.ndarray) -> pd.DataFrame:
+MIN_RECORDS_PER_WINDOW = 3  # windows with fewer readings make std=0 ambiguous (real vs. just-one-sample)
+
+# Window stats are expressed relative to a trailing per-station/per-feature
+# "clean" baseline (raw readings with that feature's own fault periods
+# excluded) instead of absolute values. Two features non-stationary over the
+# ~11-month deployment (energy accumulates, weight varies by experiment) blew
+# up every downstream model: per-feature Isolation Forest scores weren't
+# comparable across features, and a supervised classifier trained on
+# mid-2025 absolute values had no basis to recognize a mid-2026 fault of the
+# same relative shape. Expressing everything as "deviation from recent local
+# behavior" fixes both at once.
+BASELINE_HOURS = 24
+MIN_BASELINE_READINGS = 10
+
+
+def build_clean_series(times: np.ndarray, values: np.ndarray, feature: str,
+                        fault_log_for_station: list[dict]) -> tuple[np.ndarray, np.ndarray]:
+    """Raw (time, value) pairs for one feature with that feature's own fault
+    periods excluded, so the rolling baseline never gets contaminated by the
+    thing it's supposed to be the "normal" reference for."""
+    # times is an object array of tz-aware Timestamp scalars (pandas' .to_numpy()
+    # doesn't convert tz-aware datetimes to a real datetime64 dtype) — fault
+    # start/end are tz-aware Timestamps too, so compare them as-is.
+    mask = np.ones(len(times), dtype=bool)
+    for f in fault_log_for_station:
+        if f["parameter"] != feature:
+            continue
+        mask &= ~((times >= f["start"]) & (times < f["end"]))
+    return times[mask], values[mask]
+
+
+def rolling_baseline(clean_times: np.ndarray, clean_vals: np.ndarray, window_start: np.datetime64) -> tuple[float, float]:
+    """Causal trailing mean/std as of window_start — only ever looks backward,
+    so there's no leakage from the window (or its fault) into its own baseline."""
+    lookback_start = window_start - np.timedelta64(BASELINE_HOURS, "h")
+    lo = int(np.searchsorted(clean_times, lookback_start, side="left"))
+    hi = int(np.searchsorted(clean_times, window_start, side="left"))
+
+    if hi - lo < MIN_BASELINE_READINGS:
+        lo = 0  # not enough in the trailing window — expand to full history so far
+
+    vals = clean_vals[lo:hi]
+    vals = vals[~np.isnan(vals)]
+    if len(vals) < 2:
+        return np.nan, np.nan
+    return float(vals.mean()), float(vals.std())
+
+
+def compute_windows(df: pd.DataFrame, station_id: int, starts: np.ndarray,
+                     fault_log_for_station: list[dict]) -> pd.DataFrame:
     times = df["time"].to_numpy()
+
+    clean_series = {
+        feature: build_clean_series(times, df[feature].to_numpy(), feature, fault_log_for_station)
+        for feature in FEATURE_COLUMNS
+    }
+
     rows = []
     for start in starts:
         end = start + WINDOW
         lo = int(np.searchsorted(times, start, side="left"))
         hi = int(np.searchsorted(times, end, side="left"))
-        if hi - lo == 0:
+        if hi - lo < MIN_RECORDS_PER_WINDOW:
             continue
         chunk = df.iloc[lo:hi]
         row = {
@@ -115,10 +179,22 @@ def compute_windows(df: pd.DataFrame, station_id: int, starts: np.ndarray) -> pd
         }
         for col in FEATURE_COLUMNS:
             vals = chunk[col]
-            row[f"{col}_mean"] = vals.mean(skipna=True)
-            row[f"{col}_std"] = vals.std(skipna=True)
-            row[f"{col}_min"] = vals.min(skipna=True)
-            row[f"{col}_max"] = vals.max(skipna=True)
+            w_mean = vals.mean(skipna=True)
+            w_std = vals.std(skipna=True)
+            w_min = vals.min(skipna=True)
+            w_max = vals.max(skipna=True)
+
+            clean_times, clean_vals = clean_series[col]
+            baseline_mean, baseline_std = rolling_baseline(clean_times, clean_vals, start)
+            safe_std = baseline_std if baseline_std and baseline_std > 0 else np.nan
+
+            row[f"{col}_rel_mean"] = (w_mean - baseline_mean) / safe_std
+            row[f"{col}_rel_std"] = w_std / safe_std
+            row[f"{col}_rel_min"] = (w_min - baseline_mean) / safe_std
+            row[f"{col}_rel_max"] = (w_max - baseline_mean) / safe_std
+            # dropout faults null out raw values — surface that directly instead of
+            # letting mean/min/max imputation silently erase the missing-data signal
+            row[f"{col}_missing_frac"] = vals.isna().mean()
         rows.append(row)
     return pd.DataFrame(rows)
 
@@ -207,7 +283,7 @@ def build_dataset(seed: int, target_anomaly_frac: float) -> tuple[dict[str, pd.D
         )
         all_faults.extend(fault_log)
 
-        windows = compute_windows(faulted_df, station_id, starts)
+        windows = compute_windows(faulted_df, station_id, starts, fault_log)
         windows = label_windows(windows, fault_log)
         all_windows.append(windows)
 

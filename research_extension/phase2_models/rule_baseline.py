@@ -26,7 +26,7 @@ class RuleBasedBaseline:
     def fit(self, train_df: pd.DataFrame) -> "RuleBasedBaseline":
         normal = train_df[~train_df["is_anomaly"]]
         for feature in FEATURE_COLUMNS:
-            col = normal[f"{feature}_mean"]
+            col = normal[f"{feature}_rel_mean"]
             self.means_[feature] = float(col.mean())
             self.stds_[feature] = float(col.std()) or 1.0
         return self
@@ -34,7 +34,7 @@ class RuleBasedBaseline:
     def _zscores(self, df: pd.DataFrame) -> pd.DataFrame:
         scores = {}
         for feature in FEATURE_COLUMNS:
-            col = df[f"{feature}_mean"]
+            col = df[f"{feature}_rel_mean"]
             scores[feature] = (col - self.means_[feature]).abs() / self.stds_[feature]
         return pd.DataFrame(scores, index=df.index)
 
