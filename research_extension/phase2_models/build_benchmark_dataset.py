@@ -70,6 +70,12 @@ CANDIDATE_OFFSETS = [pd.Timedelta(minutes=5 * k) for k in range(WINDOW_MINUTES /
 # nonzero overlap counted) — recalibrate this if MIN_OVERLAP_FRACTION changes.
 AVG_WINDOWS_PER_FAULT = 4
 
+# Stations 3 and 6 hold ~99% of real sensor history (the other 6 are lightly-used
+# test/dev units with 6-44 windows each — see CLAUDE.md / PENDING_TASKS.md). All 8
+# were attempted; the rest are excluded here rather than diluting the "normal"
+# distribution with near-empty stations. Override with --stations for a different scope.
+INCLUDED_STATIONS = [3, 6]
+
 DATA_DIR = os.path.join(os.path.dirname(__file__), "data")
 
 TRACKING_URI = os.getenv(
@@ -82,15 +88,16 @@ TRACKING_URI = os.getenv(
 # Load raw data
 # ---------------------------------------------------------------------------
 
-def load_station_data() -> dict[int, pd.DataFrame]:
+def load_station_data(stations: list[int]) -> dict[int, pd.DataFrame]:
     conn = psycopg2.connect(DATABASE_URL)
     try:
         query = f"""
             SELECT time, station_id, {', '.join(FEATURE_COLUMNS)}
             FROM measurements
+            WHERE station_id = ANY(%s)
             ORDER BY station_id, time
         """
-        df = pd.read_sql(query, conn)
+        df = pd.read_sql(query, conn, params=(stations,))
     finally:
         conn.close()
 
@@ -320,11 +327,12 @@ def time_based_split(windows: pd.DataFrame) -> dict[str, pd.DataFrame]:
 # Orchestration
 # ---------------------------------------------------------------------------
 
-def build_dataset(seed: int, target_anomaly_frac: float) -> tuple[dict[str, pd.DataFrame], list[dict]]:
+def build_dataset(seed: int, target_anomaly_frac: float,
+                   stations: list[int] = INCLUDED_STATIONS) -> tuple[dict[str, pd.DataFrame], list[dict]]:
     rng = np.random.default_rng(seed)
 
-    print("[Benchmark] Loading raw station data from PostgreSQL...")
-    station_data = load_station_data()
+    print(f"[Benchmark] Loading raw station data from PostgreSQL (stations={stations})...")
+    station_data = load_station_data(stations)
     print(f"[Benchmark] Loaded {sum(len(df) for df in station_data.values()):,} rows "
           f"across {len(station_data)} stations")
 
@@ -387,9 +395,12 @@ def main():
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--target-anomaly-frac", type=float, default=0.175,
                          help="Approximate target fraction of windows that should be anomalous")
+    parser.add_argument("--stations", type=str, default=None,
+                         help="Comma-separated station IDs (default: INCLUDED_STATIONS = 3,6)")
     args = parser.parse_args()
 
-    splits, all_faults = build_dataset(args.seed, args.target_anomaly_frac)
+    stations = [int(s) for s in args.stations.split(",")] if args.stations else INCLUDED_STATIONS
+    splits, all_faults = build_dataset(args.seed, args.target_anomaly_frac, stations)
 
     os.makedirs(DATA_DIR, exist_ok=True)
     for split_name, df in splits.items():

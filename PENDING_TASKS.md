@@ -100,6 +100,25 @@ Note: requires active water flow through the sensor to produce non-zero readings
 **Bug:** When `stop()` is called while `_run()` thread is mid-poll, `_instrument` is set to None before the thread checks it. Causes `'NoneType' object cannot be interpreted as an integer`.
 **Fix:** Add `self._running` check before using `self._instrument` in `_run()` loop.
 
+#### B9. ingestion_worker.py — Shared Global Checkpoint Silently Skips Low-Volume Stations
+**File:** `ingestion_worker.py::FirebaseClient.fetch_new_documents`
+**Bug:** Discovered 2026-07-15 while backfilling stations 3/6 for Phase 2 research: `fetch_new_documents`
+queries each station's `readings` subcollection independently (capped at `limit // n_stations` docs
+per station per call), then sets the **next call's checkpoint to the global max timestamp across all
+stations in that batch**. If one station has a much denser backlog than another right after the
+checkpoint, its per-station cap fills up within a much smaller real-time span, while the global
+checkpoint still jumps forward to whatever the fastest-advancing station reached. The next call then
+queries every station starting from that jumped-ahead checkpoint — permanently skipping any
+documents from slower stations that fell between the old and new checkpoint. Confirmed in practice:
+running the worker against the shared 9-station backlog inserted 0 new rows for station 6 (which had
+31,000 genuinely new documents sitting in Firestore, later confirmed and backfilled via a
+single-station bypass query). This isn't specific to a one-off script — it's in the production
+worker itself, and would silently under-ingest any lower-volume station on every scheduled run
+whenever a higher-volume station's backlog dominates a batch.
+**Fix:** Track a per-station checkpoint (e.g. a dict keyed by station_name) instead of one shared
+timestamp, so each station's next query starts from where *that station* last left off, not from the
+batch-wide max.
+
 ---
 
 ## PART C — Research Extension (Summer 2026)

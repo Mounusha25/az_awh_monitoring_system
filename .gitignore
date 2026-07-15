@@ -1,6 +1,8 @@
 # Firebase service account credentials — NEVER commit these
 awh_az/backend/serviceAccountKey.json
 awh_az/backend/awh-project-460421-52cd6ebf2aa3.json
+**/firebase-key.json
+**/*serviceAccount*.json
 
 # Python
 **/__pycache__/
