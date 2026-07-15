@@ -137,31 +137,54 @@ missing_frac vs. unbounded rel_mean, without assuming Gaussian tails); added `fa
 `inject_synthetic_faults.py` → `label_windows()` so evaluation can resample by fault instance, not by
 window; added `evaluate.py::bootstrap_ci()` for exactly that.
 
-**Per-fault-type breakdown (test set, Isolation Forest ensemble, single run — not bootstrap-averaged):**
-| Fault type | Detection recall | Attribution accuracy (given detected) |
-|---|---|---|
-| spike | 100% | 100% |
-| dropout | 15% | 100% |
-| stuck_at | 34% | 100% |
-| drift | 37% | 86% |
+**Round 3 (independent reproduction + ablation, external review):** an independent bootstrap run
+reproduced round 2's numbers to 3 decimal places, confirming the pipeline is deterministic and
+reproducible. That review also ran the ablation needed to resolve round 2's open question — is
+the recall regression from `rel_slope` or from percentile-rank scoring? — by re-running with
+percentile-rank scoring but `rel_slope` excluded: **it's `rel_slope`, not percentile-rank scoring.**
+Percentile-rank alone reproduced round-1 recall almost exactly; adding `rel_slope` is what collapsed
+it. Mechanism: `rel_slope` is a real signal for drift (its defining property is a ramp) but pure
+noise for dropout/stuck_at (no ramp shape), so it acted as a noisy 7th dimension in those features'
+per-feature IsolationForest — the same "too many dimensions for one forest" problem already
+diagnosed for the two-stage model's 70-column joint detector, just at a smaller scale (6→7 columns).
 
-Compare to round 1's numbers (spike 100/100, dropout 76/100, stuck_at 60/100, drift 59/61): `rel_slope`
-clearly helped drift's attribution (61%→86%) but detection recall dropped broadly across fault types.
-**Given the bootstrap CI width (~0.15-0.20 F1 points on ~197 independent faults), this recall drop has
-not been confirmed as real vs. noise from the threshold/candidate-grid change** — don't over-index on it
-without more runs (different seeds, or a proper k-fold over fault instances).
+**Fix applied:** `isolation_forest_model.py`'s `IsolationForestEnsemble` now fits two forests per
+feature — a 6-column DETECTION forest (`data_prep.py::detection_columns`, no `rel_slope`) that
+decides `is_anomaly`, and a 7-column ATTRIBUTION forest (`attribution_columns`, includes
+`rel_slope`) used only to rank candidate causal parameters among windows already flagged anomalous.
+`two_stage_model.py` updated to call the new `attribution_feature_scores()` accordingly.
 
-**Diagnosed why two-stage (F1 0.313) and the supervised classifier (F1 0.222) underperform the ensemble:**
-both have far worse false-positive rates on normal windows — two-stage 52%, classifier 47.5%, vs. the
-ensemble's 12%. Root cause for two-stage: the joint `IsolationForestDetector` fits one forest over all 70
-columns (10 features × 7 stats), and in that dimensionality it barely separates normal from anomalous —
-this is a curse-of-dimensionality problem, not fixable by re-threshold alone; would need dimensionality
-reduction (PCA / feature selection) before the joint forest to be worth pursuing further.
+**Result — real, but not what was initially hoped for:** detection recall recovered (drift 59%,
+stuck_at 66%, dropout 50% — up from round 2's 37%/34%/15%, though dropout not fully back to round
+1's 76%). But drift's attribution-given-detection *also* reverted, from round 2's 86% back to 60%.
+Diagnosis: decoupling changed *which* windows get flagged as anomalous (the 6-column detector's
+selection differs from round 2's combined-forest selection), and the newly-caught windows are a
+harder set for the attribution forest to get right — the same self-selection dynamic already seen
+between the two-stage model and the plain ensemble, recurring here at a smaller scale. **Bootstrap
+CI confirms the net effect is a real, clean win on detection, not a wash:** detection F1 mean 0.560,
+95% CI [0.435, 0.672] (up from [0.352, 0.637] pre-fix — a genuine upward shift, not noise), while
+attribution F1 is statistically unchanged at mean 0.437, 95% CI [0.354, 0.514] (nearly identical to
+pre-fix [0.335, 0.519]). Current best model = this decoupled ensemble.
 
-**Next step:** don't chase more feature engineering yet. Priorities in order: (1) confirm whether the
-recall regression above is real by re-running with a different seed or doing a fault-instance k-fold,
-since current evidence is inconclusive; (2) if real, investigate per-feature (not just per-ensemble)
-threshold tuning, since percentile-rank scoring makes features *comparable* but a single shared cutoff
-across all 10 can still be a bad fit if their separability genuinely differs; (3) LSTM remains explicitly
-deferred — temporal shape is the right tool for drift specifically, but cheaper options aren't exhausted
-yet, and sparse-station data (only stations 3 and 6 have volume) is still a real constraint on it.
+**Diagnosed why two-stage (F1 ≈0.30) and the supervised classifier (F1 ≈0.20-0.25) underperform:**
+both have far worse false-positive rates on normal windows than the ensemble's ~12% (two-stage
+~46-52%, classifier ~47.5% by FP/(FP+TN) — note: an independent reproduction got 21%/49.3%
+respectively for FPR/1-precision on the classifier, which doesn't match either of my numbers
+cleanly; the discrepancy is most likely a different threshold value selected during independent
+reproduction rather than a definition error, since my own recomputation confirmed 47.5% is
+genuinely FP/(FP+TN) at threshold=0.15, not an accidental 1-precision figure — **pin down the exact
+threshold value before either number goes in a paper**). Root cause for two-stage: the joint
+`JointIsolationForestDetector` fits one forest over all 70 columns, and in that dimensionality it
+barely separates normal from anomalous — a curse-of-dimensionality problem, not fixable by
+re-thresholding; would need PCA/feature selection before the joint-forest architecture is worth
+pursuing further.
+
+**Next step:** the detection/attribution decoupling pattern has now paid off twice (two-stage vs.
+ensemble; 6-col vs 7-col per-feature forests) — it's the load-bearing idea in this whole pipeline,
+worth treating as a design principle rather than a one-off fix. Priorities: (1) reconcile the
+classifier FPR discrepancy (exact threshold value, exact definition) before any number is quoted
+externally; (2) LSTM remains deferred — temporal shape is the right tool for drift specifically, and
+now that rel_slope's value for drift is cleanly isolated to the attribution stage, an LSTM
+attribution-stage model (replacing or augmenting the 7-column forest) is a more targeted next
+architecture than a full joint LSTM detector; sparse-station data (only stations 3 and 6 have
+volume) is still a real constraint on it.

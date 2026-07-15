@@ -52,7 +52,7 @@ class TwoStageModel:
 
     def predict(self, df: pd.DataFrame) -> pd.DataFrame:
         detection = self.detector.predict(df)
-        feature_scores = self.attributor.feature_scores(df)
+        feature_scores = self.attributor.attribution_feature_scores(df)
         causal_parameter = feature_scores.idxmax(axis=1)
         causal_parameter = causal_parameter.where(detection["is_anomaly_pred"], "none")
 

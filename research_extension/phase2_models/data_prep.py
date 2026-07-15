@@ -15,11 +15,33 @@ import pandas as pd
 
 from build_benchmark_dataset import FEATURE_COLUMNS
 
-STAT_SUFFIXES = ["rel_mean", "rel_std", "rel_min", "rel_max", "rel_slope", "missing_frac", "max_run_frac"]
+# Detection columns only — rel_slope excluded. rel_slope is genuinely informative
+# for drift (its defining property is a ramp), but for fault types with no ramp
+# shape (dropout, stuck_at) it's just ordinary sensor noise — a 7th noisy
+# dimension fed into a per-feature IsolationForest that measurably hurt those
+# fault types' detection recall (confirmed by ablation: reverting to 6 columns
+# for detection restored round-1 recall almost exactly). Same "too many
+# dimensions for one forest" problem already diagnosed for the two-stage
+# model's 70-column joint detector, just at a smaller scale.
+DETECTION_STAT_SUFFIXES = ["rel_mean", "rel_std", "rel_min", "rel_max", "missing_frac", "max_run_frac"]
+# Attribution columns — adds rel_slope back in, used only to rank candidate
+# causal parameters among windows a detector has already flagged anomalous,
+# where it demonstrably helps (drift attribution-given-detection: 61% -> 86%).
+ATTRIBUTION_STAT_SUFFIXES = DETECTION_STAT_SUFFIXES + ["rel_slope"]
+
+STAT_SUFFIXES = ATTRIBUTION_STAT_SUFFIXES  # kept for callers that want the full set (e.g. the joint detector, the supervised classifier)
 
 
-def stat_columns(feature: str) -> list[str]:
-    return [f"{feature}_{s}" for s in STAT_SUFFIXES]
+def stat_columns(feature: str, suffixes: list[str] = STAT_SUFFIXES) -> list[str]:
+    return [f"{feature}_{s}" for s in suffixes]
+
+
+def detection_columns(feature: str) -> list[str]:
+    return stat_columns(feature, DETECTION_STAT_SUFFIXES)
+
+
+def attribution_columns(feature: str) -> list[str]:
+    return stat_columns(feature, ATTRIBUTION_STAT_SUFFIXES)
 
 
 def all_stat_columns() -> list[str]:

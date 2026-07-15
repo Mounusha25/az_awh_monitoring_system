@@ -1,22 +1,28 @@
 """
 AWH Isolation Forest Ensemble — Phase 2: Anomaly Attribution
 
-One IsolationForest per sensor feature, each fit only on that feature's own
-stat columns (rel_mean/rel_std/rel_min/rel_max/rel_slope/missing_frac/
-max_run_frac) using training windows labeled normal. Because each fault in
-the benchmark dataset perturbs exactly one feature, the model whose own
-forest scores a window most anomalous is the model's attribution guess for
-that window's causal parameter.
+Two IsolationForest models per sensor feature:
+  - a DETECTION forest on the 6 "core" stat columns (rel_mean/rel_std/
+    rel_min/rel_max/missing_frac/max_run_frac) — decides is_anomaly
+  - an ATTRIBUTION forest on those 6 plus rel_slope — only used to rank
+    candidate causal parameters among windows already flagged anomalous
+
+This split exists because rel_slope, while genuinely informative for drift
+(its defining property is a ramp), is just ordinary sensor noise for fault
+types with no ramp shape (dropout, stuck_at) — feeding it into the same
+forest used for detection measurably hurt those fault types' recall
+(confirmed by ablation). Isolating it to the attribution-only stage keeps
+its benefit for drift without polluting detection for the other fault
+types — the same "too many dimensions for one forest" problem already
+diagnosed for the two-stage model's 70-column joint detector, applied here
+at a much smaller scale (6 -> 7 columns) and fixed the same way: decouple
+detection from attribution instead of asking one model to do both.
 
 Per-feature scores are converted to a percentile rank against that same
 model's score distribution on the training normal set, rather than a
-z-score. z-scores assume a roughly comparable, roughly-Gaussian-shaped
-distribution per feature — a bad assumption once bounded 0-1 features like
-missing_frac/max_run_frac sit alongside unbounded rel_mean/rel_std on
-completely different scales. Percentile rank ("what fraction of normal
-training windows scored lower than this one") is comparable across features
-regardless of the underlying score distribution's shape, so a single shared
-threshold in [0,1] genuinely means the same thing for every feature.
+z-score — comparable across features regardless of the underlying score
+distribution's shape (bounded 0-1 features like missing_frac/max_run_frac
+sit alongside unbounded rel_mean/rel_std on completely different scales).
 """
 
 from __future__ import annotations
@@ -26,57 +32,78 @@ import pandas as pd
 from sklearn.ensemble import IsolationForest
 
 from build_benchmark_dataset import FEATURE_COLUMNS
-from data_prep import prepare_columns, stat_columns
+from data_prep import attribution_columns, detection_columns, prepare_columns
+
+
+def _percentile_rank(train_scores: np.ndarray, raw_scores: np.ndarray) -> np.ndarray:
+    ranks = np.searchsorted(train_scores, raw_scores, side="right")
+    return ranks / len(train_scores)
 
 
 class IsolationForestEnsemble:
     def __init__(self, threshold: float = 0.95, n_estimators: int = 200, random_state: int = 42):
-        self.threshold = threshold  # percentile rank cutoff, in [0, 1]
+        self.threshold = threshold  # percentile rank cutoff, in [0, 1] — gates detection only
         self.n_estimators = n_estimators
         self.random_state = random_state
-        self.models_: dict[str, IsolationForest] = {}
-        self.fill_values_: dict[str, dict[str, float]] = {}
-        self.train_scores_: dict[str, np.ndarray] = {}
+
+        self.detection_models_: dict[str, IsolationForest] = {}
+        self.detection_fill_values_: dict[str, dict[str, float]] = {}
+        self.detection_train_scores_: dict[str, np.ndarray] = {}
+
+        self.attribution_models_: dict[str, IsolationForest] = {}
+        self.attribution_fill_values_: dict[str, dict[str, float]] = {}
+        self.attribution_train_scores_: dict[str, np.ndarray] = {}
+
+    def _fit_one(self, normal: pd.DataFrame, feature: str, columns: list[str]):
+        x, fill_values = prepare_columns(normal, columns)
+        model = IsolationForest(
+            n_estimators=self.n_estimators,
+            random_state=self.random_state,
+            contamination="auto",
+        )
+        model.fit(x)
+        raw_scores = -model.score_samples(x)  # higher = more anomalous
+        return model, fill_values, np.sort(raw_scores)
 
     def fit(self, train_df: pd.DataFrame) -> "IsolationForestEnsemble":
         normal = train_df[~train_df["is_anomaly"]]
         for feature in FEATURE_COLUMNS:
-            x, fill_values = prepare_columns(normal, stat_columns(feature))
-            self.fill_values_[feature] = fill_values
+            model, fill_values, train_scores = self._fit_one(normal, feature, detection_columns(feature))
+            self.detection_models_[feature] = model
+            self.detection_fill_values_[feature] = fill_values
+            self.detection_train_scores_[feature] = train_scores
 
-            model = IsolationForest(
-                n_estimators=self.n_estimators,
-                random_state=self.random_state,
-                contamination="auto",
-            )
-            model.fit(x)
-            self.models_[feature] = model
-
-            # score_samples: higher = more normal. Flip sign so higher = more anomalous.
-            raw_scores = -model.score_samples(x)
-            self.train_scores_[feature] = np.sort(raw_scores)
+            model, fill_values, train_scores = self._fit_one(normal, feature, attribution_columns(feature))
+            self.attribution_models_[feature] = model
+            self.attribution_fill_values_[feature] = fill_values
+            self.attribution_train_scores_[feature] = train_scores
         return self
 
-    def _percentile_rank(self, feature: str, raw_scores: np.ndarray) -> np.ndarray:
-        train_scores = self.train_scores_[feature]
-        ranks = np.searchsorted(train_scores, raw_scores, side="right")
-        return ranks / len(train_scores)
-
-    def feature_scores(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Per-feature percentile-rank anomaly scores in [0, 1] — higher = more anomalous."""
+    def detection_feature_scores(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Per-feature percentile-rank anomaly scores in [0, 1], 6-column detection forests."""
         scores = {}
         for feature in FEATURE_COLUMNS:
-            x, _ = prepare_columns(df, stat_columns(feature), self.fill_values_[feature])
-            raw = -self.models_[feature].score_samples(x)
-            scores[feature] = self._percentile_rank(feature, raw)
+            x, _ = prepare_columns(df, detection_columns(feature), self.detection_fill_values_[feature])
+            raw = -self.detection_models_[feature].score_samples(x)
+            scores[feature] = _percentile_rank(self.detection_train_scores_[feature], raw)
+        return pd.DataFrame(scores, index=df.index)
+
+    def attribution_feature_scores(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Per-feature percentile-rank anomaly scores in [0, 1], 7-column attribution forests (adds rel_slope)."""
+        scores = {}
+        for feature in FEATURE_COLUMNS:
+            x, _ = prepare_columns(df, attribution_columns(feature), self.attribution_fill_values_[feature])
+            raw = -self.attribution_models_[feature].score_samples(x)
+            scores[feature] = _percentile_rank(self.attribution_train_scores_[feature], raw)
         return pd.DataFrame(scores, index=df.index)
 
     def predict(self, df: pd.DataFrame) -> pd.DataFrame:
-        scores = self.feature_scores(df)
-        detection_score = scores.max(axis=1)
-        causal_parameter = scores.idxmax(axis=1)
-
+        detection_scores = self.detection_feature_scores(df)
+        detection_score = detection_scores.max(axis=1)
         is_anomaly = detection_score > self.threshold
+
+        attribution_scores = self.attribution_feature_scores(df)
+        causal_parameter = attribution_scores.idxmax(axis=1)
         causal_parameter = causal_parameter.where(is_anomaly, "none")
 
         return pd.DataFrame({
