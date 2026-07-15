@@ -103,10 +103,41 @@ Note: requires active water flow through the sensor to produce non-zero readings
 ---
 
 ## PART C — Research Extension (Summer 2026)
-Per CLAUDE.md Section 9 — not started yet.
-- Week 1–2: Kafka + Spark streaming layer
-- Week 2: Benchmark dataset (labeled anomalies, train/val/test split)
-- Week 3–4: LSTM + Isolation Forest models
-- Week 4–5: LangGraph multi-agent system
-- Week 6–7: Evidently AI + Airflow MLOps pipeline
-- Week 8: Kubernetes + Grafana deployment
+Per CLAUDE.md Section 9.
+- Week 1–2: Kafka + Spark streaming layer — ✅ built (`research_extension/phase1_streaming/`)
+- Week 2: Benchmark dataset (labeled anomalies, train/val/test split) — ✅ built, synthetic fault injection (`research_extension/phase2_models/build_benchmark_dataset.py`)
+- Week 3–4: LSTM + Isolation Forest models — IN PROGRESS, see below
+- Week 4–5: LangGraph multi-agent system — not started
+- Week 6–7: Evidently AI + Airflow MLOps pipeline — not started
+- Week 8: Kubernetes + Grafana deployment — not started
+
+### Phase 2 model status (updated 2026-07-15)
+
+Current best RQ1 result: Isolation Forest ensemble, **attribution F1 = 0.456** on
+`research_extension/phase2_models/data/test.parquet` (up from 0.184 at the start of the 2026-07-14/15
+diagnostic session), vs. proposal target F1 > 0.80. Fixes applied, in order: removed overlapping fault
+labels; stabilized the small/noisy eval set with more faults; added `{feature}_missing_frac` (dropout
+signal was being silently averaged away); replaced absolute window stats with stats relative to a
+rolling per-station/per-feature baseline (fixed both cross-feature score comparability and a supervised
+classifier's failure to generalize across the time-based split); added `{feature}_max_run_frac` (stuck_at
+signal — a frozen sensor barely moves mean/std over 30 min, but a "% of window that's one repeated
+value" feature catches it directly); and replaced "any overlap counts" labeling with a
+`MIN_OVERLAP_FRACTION = 0.5` threshold (normalized by `min(fault_duration, window_duration)` — normalizing
+by fault duration alone made faults longer than the window mathematically unlabelable, a bug caught and
+fixed mid-session) to remove sliver-overlap label noise, and roughly quadrupled the number of independent
+injected fault instances (141 → 197) since fewer windows now qualify per fault under the stricter rule.
+
+**Per-fault-type breakdown (test set, Isolation Forest ensemble):**
+| Fault type | Detection recall | Attribution accuracy (given detected) |
+|---|---|---|
+| spike | 100% | 100% |
+| dropout | 76% | 100% |
+| stuck_at | 60% | 100% |
+| drift | 59% | 61% |
+
+**What's left:** attribution accuracy *given detection* is now 61-100% across all four fault types — the
+remaining gap to the 0.80 target is now a **detection recall** problem (missing ~40% of drift/stuck_at
+instances), not attribution/argmax confusion like it was all session. Next step is threshold/recall
+tuning specifically for drift and stuck_at (e.g. per-fault-type thresholds instead of one global
+threshold, or investigate why ~40% of drift/stuck_at instances score below the detection threshold even
+with the relative-baseline features), not another round of feature engineering.

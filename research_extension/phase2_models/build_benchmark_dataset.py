@@ -63,10 +63,12 @@ SLIDE = pd.Timedelta(minutes=SLIDE_MINUTES)
 # in any window starting at t_floor, t_floor-5min, ..., t_floor-25min.
 CANDIDATE_OFFSETS = [pd.Timedelta(minutes=5 * k) for k in range(WINDOW_MINUTES // SLIDE_MINUTES)]
 
-# Rough average number of windows a single injected fault touches
-# (duration / slide + windows-of-overlap-at-each-end), used only to size
-# how many faults to inject per station to hit the target anomaly fraction.
-AVG_WINDOWS_PER_FAULT = 19
+# Rough average number of windows a single injected fault qualifies as
+# anomalous (i.e. clears MIN_OVERLAP_FRACTION below), used only to size how
+# many faults to inject per station to hit the target anomaly fraction.
+# Empirically ~4 under the overlap-fraction labeling rule (was ~19 when any
+# nonzero overlap counted) — recalibrate this if MIN_OVERLAP_FRACTION changes.
+AVG_WINDOWS_PER_FAULT = 4
 
 DATA_DIR = os.path.join(os.path.dirname(__file__), "data")
 
@@ -154,6 +156,22 @@ def rolling_baseline(clean_times: np.ndarray, clean_vals: np.ndarray, window_sta
     return float(vals.mean()), float(vals.std())
 
 
+def max_run_fraction(vals: pd.Series) -> float:
+    """Longest run of consecutive identical readings, as a fraction of the
+    window's record count. stuck_at freezes to an exact value (see
+    inject_synthetic_faults.py::_apply_stuck_at), so exact equality is the
+    right check here — this is a synthetic benchmark, not raw hardware noise."""
+    arr = vals.to_numpy()
+    n = len(arr)
+    if n == 0:
+        return 0.0
+    changed = np.ones(n, dtype=bool)
+    changed[1:] = arr[1:] != arr[:-1]  # NaN != NaN is True, so missing readings break runs
+    run_id = np.cumsum(changed)
+    run_lengths = np.bincount(run_id)
+    return float(run_lengths.max()) / n
+
+
 def compute_windows(df: pd.DataFrame, station_id: int, starts: np.ndarray,
                      fault_log_for_station: list[dict]) -> pd.DataFrame:
     times = df["time"].to_numpy()
@@ -195,6 +213,10 @@ def compute_windows(df: pd.DataFrame, station_id: int, starts: np.ndarray,
             # dropout faults null out raw values — surface that directly instead of
             # letting mean/min/max imputation silently erase the missing-data signal
             row[f"{col}_missing_frac"] = vals.isna().mean()
+            # stuck_at freezes a sensor at a constant value — a frozen run barely
+            # moves mean/std/min/max if real readings nearby are already calm, so
+            # surface "how much of this window is one repeated value" directly
+            row[f"{col}_max_run_frac"] = max_run_fraction(vals)
         rows.append(row)
     return pd.DataFrame(rows)
 
@@ -202,6 +224,18 @@ def compute_windows(df: pd.DataFrame, station_id: int, starts: np.ndarray,
 # ---------------------------------------------------------------------------
 # Labeling — attach is_anomaly / anomaly_type / causal_parameter
 # ---------------------------------------------------------------------------
+
+MIN_OVERLAP_FRACTION = 0.5  # of min(fault_duration, window_duration) — a
+# sliding window that only grazes the edge of a fault is genuinely
+# almost-normal data; labeling it anomalous is label noise no model could
+# recover from. Normalizing by the SHORTER of the two matters: for a short
+# fault (spike, ~10min) a window must capture most of the fault; for a long
+# fault (drift, up to 240min) a single 30-min window can never capture more
+# than 30 minutes of it, so normalizing by fault duration alone would make
+# long faults mathematically unlabelable (30/240=0.2, never reaches 0.5) —
+# normalizing by the window instead means "most of this window falls inside
+# the fault," which is achievable and correct for faults longer than a window.
+
 
 def label_windows(windows: pd.DataFrame, fault_log: list[dict]) -> pd.DataFrame:
     out = windows.copy()
@@ -221,15 +255,20 @@ def label_windows(windows: pd.DataFrame, fault_log: list[dict]) -> pd.DataFrame:
         if not candidates:
             continue
         best = None
-        best_overlap = pd.Timedelta(0)
+        best_overlap_frac = 0.0
         for f in candidates:
             overlap_start = max(f["start"], row["window_start"])
             overlap_end = min(f["end"], row["window_end"])
             overlap = overlap_end - overlap_start
-            if overlap > best_overlap:
-                best_overlap = overlap
+            if overlap <= pd.Timedelta(0):
+                continue
+            fault_duration = f["end"] - f["start"]
+            normalizer = min(fault_duration, WINDOW)
+            overlap_frac = overlap / normalizer
+            if overlap_frac > best_overlap_frac:
+                best_overlap_frac = overlap_frac
                 best = f
-        if best is not None:
+        if best is not None and best_overlap_frac >= MIN_OVERLAP_FRACTION:
             out.at[idx, "is_anomaly"] = True
             out.at[idx, "anomaly_type"] = best["fault_type"]
             out.at[idx, "causal_parameter"] = best["parameter"]
