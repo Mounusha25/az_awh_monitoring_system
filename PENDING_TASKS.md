@@ -198,12 +198,44 @@ barely separates normal from anomalous — a curse-of-dimensionality problem, no
 re-thresholding; would need PCA/feature selection before the joint-forest architecture is worth
 pursuing further.
 
-**Next step:** the detection/attribution decoupling pattern has now paid off twice (two-stage vs.
-ensemble; 6-col vs 7-col per-feature forests) — it's the load-bearing idea in this whole pipeline,
-worth treating as a design principle rather than a one-off fix. Priorities: (1) reconcile the
-classifier FPR discrepancy (exact threshold value, exact definition) before any number is quoted
-externally; (2) LSTM remains deferred — temporal shape is the right tool for drift specifically, and
-now that rel_slope's value for drift is cleanly isolated to the attribution stage, an LSTM
-attribution-stage model (replacing or augmenting the 7-column forest) is a more targeted next
-architecture than a full joint LSTM detector; sparse-station data (only stations 3 and 6 have
-volume) is still a real constraint on it.
+**Round 4 (2026-07-15, later same day) — scoped the benchmark to stations 3 and 6 only.**
+Rationale: the other 6 stations were attempted across all four rounds above but never contributed
+more than 6-44 windows each (lightly-used test/dev units, not continuously running) — see
+[[dataset_station_coverage_gap]]. Restricting to the 2 continuously-running stations is a defensible,
+deliberate research choice, not a compromise, and **this is the honest way to describe it in any
+methods section**: attempted all 8, found 6 had negligible usable volume, scoped down explicitly.
+Do not write "used all 8 stations" anywhere — the fault log and code make the actual 2-station
+concentration immediately checkable, and a mismatched methods claim is exactly the kind of thing a
+committee/reviewer catches easily and weighs heavily against credibility.
+
+**What changed operationally:** discovered `ingestion_worker.py`'s shared global checkpoint was
+silently skipping station 6 entirely (see B9 above) — backfilled it directly, bringing station 6 from
+20,278 to 44,317 rows (Sep 2025-Jul 2026) and station 3 from 20,253 to 24,869 (Aug 2025-Jul 2026).
+Added `INCLUDED_STATIONS` / `--stations` scoping to `build_benchmark_dataset.py`. Rebuilt: 317
+independent fault instances (up from 197), 14,064 total windows, all from these 2 stations.
+
+**Result — genuinely mixed, not a clean win, verified by independent reproduction to the decimal:**
+detection F1 statistically unchanged (0.544 [0.409, 0.647] vs the 8-station scope's 0.560 [0.435,
+0.672]), but **attribution F1 dropped and the CIs barely overlap** — 0.297 [0.198, 0.388] vs 0.437
+[0.354, 0.514], a real difference. Per-fault-type: spike detection recall collapsed to 50% (was 100%
+in every prior round) and stuck_at attribution collapsed to 22.6% (was 100%). False-positive rate on
+normal windows rose to 28.8% (from 12%).
+
+**Investigated but not resolved:** tested the hypothesis that the extra ~2 months of newly-backfilled
+data introduced real sensor calibration drift into the test period (a later, more-extended time range
+than any prior split). Evidence is mixed, not confirmatory: comparing val (Jun 14-21, closer to
+train) vs test (Jun 21-Jul 13) recall, drift and stuck_at were flat/slightly up (71.1%→71.7%,
+36.8%→40.8%) while spike and dropout declined (79.8%→50.0%, 58.3%→44.1%). If genuine calibration
+drift were driving this, all four fault types should degrade together — they don't, which weakens
+(but doesn't rule out) the drift story. An equally plausible competing explanation: test-set spike
+count dropped to just 24 windows (vs 84 in val) — small per-fault-type samples can swing recall
+10-20 points by chance alone, consistent with the CI-width fragility already established earlier in
+this document. **Not settled either way.**
+
+**Next step (fresh session, not a quick check):** the test that would actually settle this is a
+rotating time-split (k-fold across different train/val/test cuts) to see whether degradation follows
+wherever the split boundary falls (supports drift) or stays tied to which specific fault instances
+land in which split (supports small-sample fragility). Until that's run, treat both the 8-station and
+2-station numbers as provisional and don't pick one as "the" result for the paper. Secondary,
+still-open items from round 3 (classifier FPR reconciliation, LSTM at the attribution stage) remain
+queued behind this.
