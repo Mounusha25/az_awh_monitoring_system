@@ -1,0 +1,19 @@
+# Phase 2 — Benchmark Dataset + Anomaly Detection Models
+# Install: pip install -r requirements_phase2.txt
+# (Same resolved versions as requirements_phase1.txt — reuse that venv if
+#  you already set up Phase 1, no need for a separate one.)
+
+# Data processing
+pandas==2.3.3
+numpy==2.5.0
+pyarrow==24.0.0
+
+# Database
+psycopg2-binary==2.9.12
+
+# Experiment tracking
+mlflow==3.14.0
+
+# Models (Phase 2 model training, not needed for build_benchmark_dataset.py alone)
+scikit-learn==1.6.1
+torch==2.6.0

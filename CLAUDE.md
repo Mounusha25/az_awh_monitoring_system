@@ -287,9 +287,22 @@ Each AWH station runs a Raspberry Pi with `RPi_USB_Package/`. USB port assignmen
 
 ## 9. Research Extension Tech Stack (Summer 2026 — In Development)
 
-These are NOT yet in the codebase. They are the next phase per the research proposal.
+Phase 1 is built and has been run at least once; Phases 2–5 are NOT yet in the
+codebase and remain the next phases per the research proposal.
 
-### Phase 1 (Weeks 1–2) — Streaming Foundation
+### Phase 1 (Weeks 1–2) — Streaming Foundation ✅ Built
+Lives in `research_extension/phase1_streaming/`:
+- `producer.py` — Kafka producer; replays PostgreSQL sensor rows in
+  chronological order (`--mode replay|live`, `--speed`, `--since`) to topic
+  `awh-sensor-readings`
+- `consumer.py` — Spark Structured Streaming consumer; computes windowed
+  features (mean/std/min/max, 30-min sliding window, 5-min step) and writes
+  to the `windowed_features` table
+- `schema_windowed_features.sql` — target table schema
+- `mlflow_setup.py` — creates the `AWH-AnomalyDetection` MLflow experiment
+- `docker-compose.yml` — local Kafka broker
+- `requirements_phase1.txt` — kafka-python, pyspark, mlflow, psycopg2, pandas
+  (resolved for Python 3.14 / macOS arm64; needs Java 11 for pyspark)
 - **Apache Kafka** — simulated real-time sensor event streaming
 - **Apache Spark Structured Streaming** — windowed feature aggregation
   (30-min sliding window, 5-min step) → writes to `windowed_features` table
@@ -338,8 +351,8 @@ These are NOT yet in the codebase. They are the next phase per the research prop
 | Next.js dashboard | ✅ Production |
 | 70,000+ real sensor records | ✅ Live |
 | Rule-based anomaly baseline (40% false-alert reduction) | ✅ Operational |
-| Kafka + Spark streaming layer | 🔲 Week 1–2 |
-| Benchmark dataset (labeled, train/val/test split) | 🔲 Week 2 |
+| Kafka + Spark streaming layer (`research_extension/phase1_streaming/`) | ✅ Built (Week 1–2) |
+| Benchmark dataset (labeled, train/val/test split) | 🔲 Week 2 — next up |
 | LSTM + Isolation Forest models | 🔲 Week 3–4 |
 | LangGraph multi-agent system | 🔲 Week 4–5 |
 | Evidently + Airflow MLOps pipeline | 🔲 Week 6–7 |
