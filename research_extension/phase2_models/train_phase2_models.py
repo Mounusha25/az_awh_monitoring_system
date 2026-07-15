@@ -31,8 +31,17 @@ from supervised_classifier import SupervisedAttributionModel
 from two_stage_model import TwoStageModel
 
 MODELS_DIR = os.path.join(DATA_DIR, "models")
-THRESHOLD_CANDIDATES = np.arange(0.5, 6.25, 0.25)
-CLASSIFIER_THRESHOLD_CANDIDATES = np.arange(0.05, 1.0, 0.05)  # probability scale, not z-score
+THRESHOLD_CANDIDATES = np.arange(0.5, 6.25, 0.25)  # rule baseline's raw z-score cutoff
+# Percentile-rank scale [0,1] for both the classifier's confidence cutoff and the
+# Isolation Forest models' percentile-rank cutoff (see isolation_forest_model.py /
+# joint_detector.py — replaced z-score normalization with percentile rank so a
+# single shared threshold means the same thing across differently-shaped feature
+# score distributions). Finer resolution near 1.0 since that's where the
+# interesting operating points are.
+PERCENTILE_THRESHOLD_CANDIDATES = np.concatenate([np.arange(0.5, 0.95, 0.05), np.arange(0.95, 1.0, 0.01)])
+# Classifier confidence doesn't cluster near 1.0 the way percentile-rank scores
+# do (11-way softmax spreads probability mass around) — needs its own, lower range.
+CLASSIFIER_THRESHOLD_CANDIDATES = np.arange(0.05, 1.0, 0.05)
 
 RQ1_TARGET_F1 = 0.80
 RQ1_BASELINE_F1_CEILING = 0.65
@@ -78,7 +87,7 @@ def main():
 
     # --- Isolation Forest ensemble ---
     iso_forest = IsolationForestEnsemble().fit(train_df)
-    best_thresh, val_f1 = tune_threshold(iso_forest, val_df, THRESHOLD_CANDIDATES)
+    best_thresh, val_f1 = tune_threshold(iso_forest, val_df, PERCENTILE_THRESHOLD_CANDIDATES)
     iso_metrics = evaluate_model(iso_forest, test_df)
     print(f"[Phase2] Isolation Forest ensemble — threshold={best_thresh:.2f} (val F1={val_f1:.3f}) "
           f"test_detection_f1={iso_metrics['detection_f1']:.3f} "
@@ -90,7 +99,7 @@ def main():
 
     # --- Two-stage: joint detector (avoids max-of-10 inflation) + conditional per-feature attribution ---
     two_stage = TwoStageModel().fit(train_df)
-    best_thresh, val_f1 = tune_threshold(two_stage, val_df, THRESHOLD_CANDIDATES)
+    best_thresh, val_f1 = tune_threshold(two_stage, val_df, PERCENTILE_THRESHOLD_CANDIDATES)
     two_stage_metrics = evaluate_model(two_stage, test_df)
     print(f"[Phase2] Two-stage model — threshold={best_thresh:.2f} (val F1={val_f1:.3f}) "
           f"test_detection_f1={two_stage_metrics['detection_f1']:.3f} "

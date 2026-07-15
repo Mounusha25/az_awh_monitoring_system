@@ -111,33 +111,57 @@ Per CLAUDE.md Section 9.
 - Week 6–7: Evidently AI + Airflow MLOps pipeline — not started
 - Week 8: Kubernetes + Grafana deployment — not started
 
-### Phase 2 model status (updated 2026-07-15)
+### Phase 2 model status (updated 2026-07-15, second pass)
 
-Current best RQ1 result: Isolation Forest ensemble, **attribution F1 = 0.456** on
-`research_extension/phase2_models/data/test.parquet` (up from 0.184 at the start of the 2026-07-14/15
-diagnostic session), vs. proposal target F1 > 0.80. Fixes applied, in order: removed overlapping fault
-labels; stabilized the small/noisy eval set with more faults; added `{feature}_missing_frac` (dropout
-signal was being silently averaged away); replaced absolute window stats with stats relative to a
-rolling per-station/per-feature baseline (fixed both cross-feature score comparability and a supervised
-classifier's failure to generalize across the time-based split); added `{feature}_max_run_frac` (stuck_at
-signal — a frozen sensor barely moves mean/std over 30 min, but a "% of window that's one repeated
-value" feature catches it directly); and replaced "any overlap counts" labeling with a
-`MIN_OVERLAP_FRACTION = 0.5` threshold (normalized by `min(fault_duration, window_duration)` — normalizing
-by fault duration alone made faults longer than the window mathematically unlabelable, a bug caught and
-fixed mid-session) to remove sliver-overlap label noise, and roughly quadrupled the number of independent
-injected fault instances (141 → 197) since fewer windows now qualify per fault under the stricter rule.
+Current best RQ1 result: Isolation Forest ensemble, **attribution F1 = 0.437, 95% bootstrap CI
+[0.335, 0.519]** (fault-instance-level cluster bootstrap, n=200) on
+`research_extension/phase2_models/data/test.parquet`, vs. proposal target F1 > 0.80. Point estimate up
+from 0.184 at the start of the 2026-07-14/15 diagnostic session, but treat single-run point estimates
+with caution from here on — see the CI-width note below.
 
-**Per-fault-type breakdown (test set, Isolation Forest ensemble):**
+**Two rounds of fixes applied.** Round 1: removed overlapping fault labels; stabilized the small/noisy
+eval set with more faults; added `{feature}_missing_frac` (dropout signal was being silently averaged
+away); replaced absolute window stats with stats relative to a rolling per-station/per-feature baseline
+(fixed cross-feature score comparability and a supervised classifier's generalization failure across the
+time-based split); added `{feature}_max_run_frac` (stuck_at — a frozen sensor barely moves mean/std, but
+"% of window that's one repeated value" catches it directly); switched fault labeling from "any overlap
+counts" to `MIN_OVERLAP_FRACTION = 0.5` normalized by `min(fault_duration, window_duration)` (normalizing
+by fault duration alone made faults longer than the window mathematically unlabelable — a bug caught and
+fixed mid-session); increased independent fault instances 141 → 197.
+
+Round 2 (external review + fixes): added `{feature}_rel_slope` (second-half-mean minus first-half-mean,
+targets drift's ramp shape specifically — snapshot stats like rel_mean miss a gradual trend); replaced
+z-score normalization with **percentile-rank** scoring in `isolation_forest_model.py` /
+`joint_detector.py` (comparable across differently-shaped/scaled feature distributions, e.g. bounded
+missing_frac vs. unbounded rel_mean, without assuming Gaussian tails); added `fault_id` tracking through
+`inject_synthetic_faults.py` → `label_windows()` so evaluation can resample by fault instance, not by
+window; added `evaluate.py::bootstrap_ci()` for exactly that.
+
+**Per-fault-type breakdown (test set, Isolation Forest ensemble, single run — not bootstrap-averaged):**
 | Fault type | Detection recall | Attribution accuracy (given detected) |
 |---|---|---|
 | spike | 100% | 100% |
-| dropout | 76% | 100% |
-| stuck_at | 60% | 100% |
-| drift | 59% | 61% |
+| dropout | 15% | 100% |
+| stuck_at | 34% | 100% |
+| drift | 37% | 86% |
 
-**What's left:** attribution accuracy *given detection* is now 61-100% across all four fault types — the
-remaining gap to the 0.80 target is now a **detection recall** problem (missing ~40% of drift/stuck_at
-instances), not attribution/argmax confusion like it was all session. Next step is threshold/recall
-tuning specifically for drift and stuck_at (e.g. per-fault-type thresholds instead of one global
-threshold, or investigate why ~40% of drift/stuck_at instances score below the detection threshold even
-with the relative-baseline features), not another round of feature engineering.
+Compare to round 1's numbers (spike 100/100, dropout 76/100, stuck_at 60/100, drift 59/61): `rel_slope`
+clearly helped drift's attribution (61%→86%) but detection recall dropped broadly across fault types.
+**Given the bootstrap CI width (~0.15-0.20 F1 points on ~197 independent faults), this recall drop has
+not been confirmed as real vs. noise from the threshold/candidate-grid change** — don't over-index on it
+without more runs (different seeds, or a proper k-fold over fault instances).
+
+**Diagnosed why two-stage (F1 0.313) and the supervised classifier (F1 0.222) underperform the ensemble:**
+both have far worse false-positive rates on normal windows — two-stage 52%, classifier 47.5%, vs. the
+ensemble's 12%. Root cause for two-stage: the joint `IsolationForestDetector` fits one forest over all 70
+columns (10 features × 7 stats), and in that dimensionality it barely separates normal from anomalous —
+this is a curse-of-dimensionality problem, not fixable by re-threshold alone; would need dimensionality
+reduction (PCA / feature selection) before the joint forest to be worth pursuing further.
+
+**Next step:** don't chase more feature engineering yet. Priorities in order: (1) confirm whether the
+recall regression above is real by re-running with a different seed or doing a fault-instance k-fold,
+since current evidence is inconclusive; (2) if real, investigate per-feature (not just per-ensemble)
+threshold tuning, since percentile-rank scoring makes features *comparable* but a single shared cutoff
+across all 10 can still be a bad fit if their separability genuinely differs; (3) LSTM remains explicitly
+deferred — temporal shape is the right tool for drift specifically, but cheaper options aren't exhausted
+yet, and sparse-station data (only stations 3 and 6 have volume) is still a real constraint on it.

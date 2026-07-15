@@ -49,3 +49,48 @@ def evaluate_model(model, df: pd.DataFrame) -> dict:
         "attribution_f1": attribution_f1(df, predictions),
         "predictions": predictions,
     }
+
+
+def bootstrap_ci(model, test_df: pd.DataFrame, n_bootstrap: int = 300, seed: int = 0) -> dict:
+    """
+    Cluster bootstrap over fault INSTANCES, not windows. ~150-250 independent
+    injected faults underlie thousands of correlated windows (one fault touches
+    many overlapping windows that all carry nearly the same signal) — resampling
+    windows directly would treat those as independent evidence when they aren't,
+    understating how much a single-point F1 comparison could swing on a
+    differently-drawn benchmark. Resampling fault instances (with all of their
+    windows moving together) gives a CI that reflects the actual effective
+    sample size.
+    """
+    rng = np.random.default_rng(seed)
+    anomalous = test_df[test_df["is_anomaly"]]
+    normal = test_df[~test_df["is_anomaly"]]
+
+    fault_ids = anomalous["fault_id"].unique()
+    fault_row_groups = {fid: idx.to_numpy() for fid, idx in anomalous.groupby("fault_id").groups.items()}
+    normal_idx = normal.index.to_numpy()
+
+    detection_f1s = []
+    attribution_f1s = []
+    for _ in range(n_bootstrap):
+        sampled_fault_ids = rng.choice(fault_ids, size=len(fault_ids), replace=True)
+        anom_idx = np.concatenate([fault_row_groups[fid] for fid in sampled_fault_ids])
+        sampled_normal_idx = rng.choice(normal_idx, size=len(normal_idx), replace=True)
+
+        resampled = pd.concat([test_df.loc[anom_idx], test_df.loc[sampled_normal_idx]])
+        preds = model.predict(resampled)
+        detection_f1s.append(detection_f1(resampled, preds))
+        attribution_f1s.append(attribution_f1(resampled, preds))
+
+    def summarize(values: list[float]) -> dict:
+        arr = np.array(values)
+        return {
+            "mean": float(arr.mean()),
+            "ci_low": float(np.percentile(arr, 2.5)),
+            "ci_high": float(np.percentile(arr, 97.5)),
+        }
+
+    return {
+        "detection_f1": summarize(detection_f1s),
+        "attribution_f1": summarize(attribution_f1s),
+    }

@@ -172,6 +172,23 @@ def max_run_fraction(vals: pd.Series) -> float:
     return float(run_lengths.max()) / n
 
 
+def half_split_slope(vals: pd.Series) -> float:
+    """Second-half mean minus first-half mean — drift's defining property is a
+    gradual ramp, not a shifted average, so a snapshot stat like rel_mean can
+    look unremarkable on a half-drifted window even though the shape is
+    obviously not flat. This targets drift the same way max_run_fraction
+    targets stuck_at."""
+    n = len(vals)
+    if n < 4:
+        return np.nan
+    mid = n // 2
+    first_half = vals.iloc[:mid]
+    second_half = vals.iloc[mid:]
+    if first_half.isna().all() or second_half.isna().all():
+        return np.nan
+    return float(second_half.mean(skipna=True) - first_half.mean(skipna=True))
+
+
 def compute_windows(df: pd.DataFrame, station_id: int, starts: np.ndarray,
                      fault_log_for_station: list[dict]) -> pd.DataFrame:
     times = df["time"].to_numpy()
@@ -210,6 +227,7 @@ def compute_windows(df: pd.DataFrame, station_id: int, starts: np.ndarray,
             row[f"{col}_rel_std"] = w_std / safe_std
             row[f"{col}_rel_min"] = (w_min - baseline_mean) / safe_std
             row[f"{col}_rel_max"] = (w_max - baseline_mean) / safe_std
+            row[f"{col}_rel_slope"] = half_split_slope(vals) / safe_std
             # dropout faults null out raw values — surface that directly instead of
             # letting mean/min/max imputation silently erase the missing-data signal
             row[f"{col}_missing_frac"] = vals.isna().mean()
@@ -242,6 +260,10 @@ def label_windows(windows: pd.DataFrame, fault_log: list[dict]) -> pd.DataFrame:
     out["is_anomaly"] = False
     out["anomaly_type"] = "none"
     out["causal_parameter"] = "none"
+    out["fault_id"] = "none"  # links a labeled window back to the fault instance that
+    # caused it — thousands of windows come from only ~150-250 independent fault
+    # events, so evaluation needs to resample by fault instance, not by window
+    # (see evaluate.py::bootstrap_ci), or F1 comparisons overstate their own precision.
 
     if not fault_log:
         return out
@@ -272,6 +294,7 @@ def label_windows(windows: pd.DataFrame, fault_log: list[dict]) -> pd.DataFrame:
             out.at[idx, "is_anomaly"] = True
             out.at[idx, "anomaly_type"] = best["fault_type"]
             out.at[idx, "causal_parameter"] = best["parameter"]
+            out.at[idx, "fault_id"] = best["fault_id"]
 
     return out
 

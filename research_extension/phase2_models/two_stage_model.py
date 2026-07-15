@@ -25,7 +25,7 @@ from joint_detector import JointIsolationForestDetector
 
 
 class TwoStageModel:
-    def __init__(self, threshold: float = 2.0, n_estimators: int = 200, random_state: int = 42):
+    def __init__(self, threshold: float = 0.95, n_estimators: int = 200, random_state: int = 42):
         self.detector = JointIsolationForestDetector(
             threshold=threshold, n_estimators=n_estimators, random_state=random_state,
         )

@@ -155,6 +155,7 @@ def inject_faults(
             out[column] = _apply_dropout(out[column], mask)
 
         fault_log.append({
+            "fault_id": f"{station_id}_{len(fault_log)}",
             "station_id": station_id,
             "start": start_time,
             "end": end_time,

@@ -15,7 +15,7 @@ import pandas as pd
 
 from build_benchmark_dataset import FEATURE_COLUMNS
 
-STAT_SUFFIXES = ["rel_mean", "rel_std", "rel_min", "rel_max", "missing_frac", "max_run_frac"]
+STAT_SUFFIXES = ["rel_mean", "rel_std", "rel_min", "rel_max", "rel_slope", "missing_frac", "max_run_frac"]
 
 
 def stat_columns(feature: str) -> list[str]:
