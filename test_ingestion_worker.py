@@ -33,11 +33,11 @@ class TestCheckpointManager:
     """Test checkpoint save/load behavior."""
 
     def test_load_missing_file(self):
-        """Missing checkpoint should return epoch zero."""
+        """Missing checkpoint should return an empty per-station dict."""
         with tempfile.TemporaryDirectory() as tmpdir:
             mgr = CheckpointManager(f"{tmpdir}/checkpoint.json")
             result = mgr.load()
-            assert result == "1970-01-01T00:00:00.000Z"
+            assert result == {}
 
     def test_save_and_load(self):
         """Save checkpoint and verify it loads correctly."""
@@ -46,15 +46,15 @@ class TestCheckpointManager:
             mgr = CheckpointManager(path)
 
             # Save
-            mgr.save("2025-10-02T13:15:53.937Z", 100)
+            mgr.save({"Station A": "2025-10-02T13:15:53.937Z"}, 100)
 
             # Load
             mgr2 = CheckpointManager(path)
             result = mgr2.load()
-            assert result == "2025-10-02T13:15:53.937Z"
+            assert result == {"Station A": "2025-10-02T13:15:53.937Z"}
 
     def test_corrupted_checkpoint(self):
-        """Corrupted checkpoint should fallback to epoch."""
+        """Corrupted checkpoint should fallback to an empty dict."""
         with tempfile.TemporaryDirectory() as tmpdir:
             path = f"{tmpdir}/checkpoint.json"
 
@@ -65,7 +65,7 @@ class TestCheckpointManager:
 
             mgr = CheckpointManager(path)
             result = mgr.load()
-            assert result == "1970-01-01T00:00:00.000Z"
+            assert result == {}
 
     def test_atomic_write(self):
         """Checkpoint writes should be atomic (temp + rename)."""
@@ -73,7 +73,7 @@ class TestCheckpointManager:
             path = f"{tmpdir}/checkpoint.json"
             mgr = CheckpointManager(path)
 
-            mgr.save("2025-10-02T13:15:53.937Z", 50)
+            mgr.save({"Station A": "2025-10-02T13:15:53.937Z"}, 50)
 
             # Verify file exists and temp doesn't
             assert os.path.exists(path)
@@ -82,8 +82,38 @@ class TestCheckpointManager:
             # Verify content is valid JSON
             with open(path) as f:
                 data = json.load(f)
-                assert data['last_processed_timestamp'] == "2025-10-02T13:15:53.937Z"
+                assert data['last_processed_timestamps'] == {"Station A": "2025-10-02T13:15:53.937Z"}
                 assert data['processed_count'] == 50
+
+    def test_migrates_legacy_single_timestamp(self):
+        """Old-format checkpoint (pre per-station tracking) should migrate to
+        a per-station dict with a fallback default, not reset to epoch."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = f"{tmpdir}/checkpoint.json"
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, 'w') as f:
+                json.dump({
+                    'last_processed_timestamp': "2025-10-02T13:15:53.937Z",
+                    'processed_count': 100,
+                }, f)
+
+            mgr = CheckpointManager(path)
+            result = mgr.load()
+            assert result == {"_legacy_default": "2025-10-02T13:15:53.937Z"}
+
+    def test_per_station_checkpoint_independent(self):
+        """A station absent from a save should not affect another station's
+        stored checkpoint value on the next load — this is the B9 fix."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = f"{tmpdir}/checkpoint.json"
+            mgr = CheckpointManager(path)
+
+            mgr.save({"Station A": "2025-06-01T00:00:00Z", "Station B": "2025-01-01T00:00:00Z"}, 10)
+            mgr2 = CheckpointManager(path)
+            result = mgr2.load()
+
+            assert result["Station A"] == "2025-06-01T00:00:00Z"
+            assert result["Station B"] == "2025-01-01T00:00:00Z"
 
 
 # ============================================
