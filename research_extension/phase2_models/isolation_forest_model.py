@@ -79,6 +79,41 @@ class IsolationForestEnsemble:
             self.attribution_train_scores_[feature] = train_scores
         return self
 
+    def recalibrate(self, reference_df: pd.DataFrame) -> "IsolationForestEnsemble":
+        """Refresh the percentile-rank reference arrays using a more recent
+        "known normal" population, without refitting the IsolationForest
+        models themselves.
+
+        Percentile rank is only comparable across features if each feature's
+        reference distribution reflects what "normal" looks like *at
+        evaluation time*. Calibrating against train-normal windows is
+        circular-safe but goes stale over an 11-month deployment: several
+        features (power, energy, velocity, voltage, temperature) drift far
+        enough that their raw scores sit at the 90-98th percentile of the
+        *training* reference even on genuinely normal val/test windows —
+        which means they win the cross-feature attribution argmax almost by
+        default, regardless of which feature actually caused a given fault
+        (confirmed empirically: energy/weight attribution scores during their
+        own true faults were high in absolute terms, ~0.97, but still lost
+        to power/humidity's near-ceiling score on unrelated windows).
+
+        Pass a chronologically later normal population (e.g. the validation
+        split) as `reference_df` — using it only to refresh the score
+        percentile-rank lookup (not to refit the forests) keeps this
+        leak-free with respect to the test split, since test is never
+        touched here.
+        """
+        normal = reference_df[~reference_df["is_anomaly"]]
+        for feature in FEATURE_COLUMNS:
+            x, _ = prepare_columns(normal, detection_columns(feature), self.detection_fill_values_[feature])
+            raw = -self.detection_models_[feature].score_samples(x)
+            self.detection_train_scores_[feature] = np.sort(raw)
+
+            x, _ = prepare_columns(normal, attribution_columns(feature), self.attribution_fill_values_[feature])
+            raw = -self.attribution_models_[feature].score_samples(x)
+            self.attribution_train_scores_[feature] = np.sort(raw)
+        return self
+
     def detection_feature_scores(self, df: pd.DataFrame) -> pd.DataFrame:
         """Per-feature percentile-rank anomaly scores in [0, 1], 6-column detection forests."""
         scores = {}

@@ -42,6 +42,32 @@ def tune_threshold(model, val_df: pd.DataFrame, candidates: np.ndarray) -> tuple
     return best_threshold, best_f1
 
 
+def per_fault_type_breakdown(df: pd.DataFrame, predictions: pd.DataFrame) -> pd.DataFrame:
+    """Detection recall and attribution-given-detection accuracy, split out by
+    anomaly_type. A single pooled F1 can hide a fault type collapsing while
+    another compensates — this is what the rotating k-fold evaluation checks
+    per fold to see whether degradation is fault-type-specific (supports
+    small-sample fragility) or uniform (supports drift)."""
+    anomalous = df[df["is_anomaly"]].copy()
+    anomalous["detected"] = predictions.loc[anomalous.index, "is_anomaly_pred"]
+    anomalous["attributed_correctly"] = (
+        predictions.loc[anomalous.index, "causal_parameter_pred"] == anomalous["causal_parameter"]
+    )
+
+    rows = []
+    for fault_type, group in anomalous.groupby("anomaly_type"):
+        detected = group["detected"]
+        rows.append({
+            "anomaly_type": fault_type,
+            "n_windows": len(group),
+            "n_faults": group["fault_id"].nunique(),
+            "detection_recall": float(detected.mean()) if len(group) else float("nan"),
+            "attribution_given_detected": float(group.loc[detected, "attributed_correctly"].mean())
+                if detected.any() else float("nan"),
+        })
+    return pd.DataFrame(rows).sort_values("anomaly_type").reset_index(drop=True)
+
+
 def evaluate_model(model, df: pd.DataFrame) -> dict:
     predictions = model.predict(df)
     return {

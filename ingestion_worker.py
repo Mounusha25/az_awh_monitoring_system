@@ -43,6 +43,8 @@ POLL_INTERVAL_SECONDS = int(os.getenv("POLL_INTERVAL_SECONDS", "60"))
 BATCH_SIZE = int(os.getenv("BATCH_SIZE", "4000"))
 MAX_RETRIES = int(os.getenv("MAX_RETRIES", "5"))
 
+DEFAULT_EPOCH = "1970-01-01T00:00:00.000Z"
+
 # ============================================
 # Logging Setup
 # ============================================
@@ -74,35 +76,60 @@ logger = logging.getLogger(__name__)
 # ============================================
 
 class CheckpointManager:
-    """Manage ingestion checkpoint state."""
+    """Manage ingestion checkpoint state, keyed per station.
+
+    A single shared checkpoint used to advance to the batch-wide max
+    timestamp regardless of which station produced it — a station with a
+    much smaller backlog than another could have its per-station query cap
+    filled entirely by the other station's documents, after which the
+    global checkpoint jumped past it, permanently skipping whatever that
+    station had queued between the old and new checkpoint. Tracking a
+    timestamp per station means each station's next query always starts
+    from where *that station* last left off.
+    """
 
     def __init__(self, path):
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
 
     def load(self):
-        """Load checkpoint or return epoch zero."""
+        """Load per-station checkpoints, or {} if none exist yet."""
         try:
             with open(self.path) as f:
                 data = json.load(f)
-                logger.info(
-                    f"Loaded checkpoint: {data['last_processed_timestamp']} "
-                    f"({data['processed_count']} docs)"
-                )
-                return data['last_processed_timestamp']
         except FileNotFoundError:
             logger.info("No checkpoint found, starting from epoch zero")
-            return "1970-01-01T00:00:00.000Z"
-        except (json.JSONDecodeError, KeyError) as e:
+            return {}
+        except json.JSONDecodeError as e:
             logger.error(f"Checkpoint corrupted: {e}, starting from epoch")
-            return "1970-01-01T00:00:00.000Z"
+            return {}
 
-    def save(self, timestamp, count):
-        """Atomically save checkpoint."""
+        if 'last_processed_timestamps' in data:
+            timestamps = data['last_processed_timestamps']
+            logger.info(f"Loaded per-station checkpoint for {len(timestamps)} station(s)")
+            return timestamps
+
+        # Legacy single-timestamp checkpoint from before per-station tracking.
+        # Use it as every station's starting point rather than resetting to
+        # epoch — idempotent inserts make re-fetching safe, but there's no
+        # reason to re-walk the whole backlog on upgrade.
+        if 'last_processed_timestamp' in data:
+            legacy_ts = data['last_processed_timestamp']
+            logger.warning(
+                f"Migrating legacy single-timestamp checkpoint ({legacy_ts}) to "
+                "per-station tracking"
+            )
+            return {"_legacy_default": legacy_ts}
+
+        logger.error("Checkpoint file has unrecognized format, starting from epoch")
+        return {}
+
+    def save(self, timestamps, count):
+        """Atomically save per-station checkpoints."""
         temp_path = self.path.with_suffix('.tmp')
 
         data = {
-            'last_processed_timestamp': timestamp,
+            'last_processed_timestamps': timestamps,
             'processed_count': count,
             'last_update': datetime.now(timezone.utc).isoformat()
         }
@@ -111,7 +138,7 @@ class CheckpointManager:
             with open(temp_path, 'w') as f:
                 json.dump(data, f)
             temp_path.replace(self.path)  # Atomic rename on POSIX
-            logger.debug(f"Checkpoint saved: {timestamp}")
+            logger.debug(f"Checkpoint saved: {timestamps}")
         except Exception as e:
             logger.error(f"Failed to save checkpoint: {e}")
             raise
@@ -140,15 +167,16 @@ class FirebaseClient:
             logger.error(f"Firebase initialization failed: {e}")
             raise
 
-    def fetch_new_documents(self, since_timestamp, limit=BATCH_SIZE):
+    def fetch_new_documents(self, since_by_station, limit=BATCH_SIZE):
         """
-        Query Firestore for documents newer than checkpoint.
+        Query Firestore for documents newer than each station's own checkpoint.
 
         Firestore structure: stations/{station_name}/readings/{doc_id}
 
-        Queries each station's 'readings' subcollection individually, then
-        merges and sorts by timestamp. This avoids requiring a Firestore
-        collection-group index on 'timestamp'.
+        Queries each station's 'readings' subcollection individually (using
+        that station's own checkpoint, not a shared one), then merges and
+        sorts by timestamp. This avoids requiring a Firestore collection-group
+        index on 'timestamp'.
 
         To switch to a single collection_group query (faster for large backlogs),
         create the index at:
@@ -162,10 +190,16 @@ class FirebaseClient:
                 .limit(limit)
                 .stream()
             )
+        (Note: a single collection_group query would need its own per-station
+        checkpoint handling reintroduced some other way — the shared-checkpoint
+        bug this method fixes applies just as much there.)
 
         Args:
-            since_timestamp: ISO 8601 string (e.g., "2025-10-02T13:15:53.937Z")
-            limit: Max documents to fetch per query
+            since_by_station: dict of {station_name: ISO 8601 timestamp string},
+                as returned by CheckpointManager.load(). A station with no
+                entry falls back to "_legacy_default" (present only right after
+                migrating an old-format checkpoint) or the epoch.
+            limit: Max documents to fetch per query, split evenly across stations
 
         Returns:
             List of document dicts or empty list on error
@@ -176,19 +210,22 @@ class FirebaseClient:
                 logger.warning("No stations found in Firestore")
                 return []
 
-            # Firestore stores 'timestamp' as a Timestamp object, not a string.
-            # Convert the ISO checkpoint string to a timezone-aware datetime.
-            if isinstance(since_timestamp, str):
-                since_dt = datetime.fromisoformat(
-                    since_timestamp.replace('Z', '+00:00')
-                )
-            else:
-                since_dt = since_timestamp
-
             per_station = max(limit // len(stations), 50)
             all_docs = []
 
             for sdoc in stations:
+                station_name = sdoc.id
+                since_ts = (
+                    since_by_station.get(station_name)
+                    or since_by_station.get("_legacy_default")
+                    or DEFAULT_EPOCH
+                )
+                # Firestore stores 'timestamp' as a Timestamp object, not a string.
+                since_dt = (
+                    datetime.fromisoformat(since_ts.replace('Z', '+00:00'))
+                    if isinstance(since_ts, str) else since_ts
+                )
+
                 docs = list(
                     sdoc.collection('readings')
                     .where('timestamp', '>', since_dt)
@@ -453,36 +490,49 @@ class IngestionWorker:
         self.inserter = MeasurementInserter(self.conn, self.station_manager)
         logger.info("Worker initialized")
 
-    def run_once(self, checkpoint_ts):
+    def run_once(self, checkpoint):
         """
         Execute one polling cycle.
 
         Args:
-            checkpoint_ts: Last processed timestamp
+            checkpoint: dict of {station_name: last_processed_timestamp}
 
         Returns:
-            New checkpoint timestamp or original if no documents processed
+            New checkpoint dict (unchanged if no documents processed). Only
+            stations that appear in this batch have their entry advanced —
+            every other station keeps its prior checkpoint untouched, so a
+            station absent from one cycle is picked up from exactly where it
+            left off on the next.
         """
         # Fetch new documents
         batch = self.firebase.fetch_new_documents(
-            checkpoint_ts,
+            checkpoint,
             limit=BATCH_SIZE
         )
 
         if not batch:
             logger.debug("No new documents in this cycle")
-            return checkpoint_ts
+            return checkpoint
 
         # Insert to PostgreSQL
         self.inserter.insert_batch(batch)
 
-        # Update checkpoint to max timestamp in batch.
-        # Firestore returns DatetimeWithNanoseconds; convert to ISO string for JSON storage.
-        max_ts = max(doc['timestamp'] for doc in batch)
-        if hasattr(max_ts, 'isoformat'):
-            new_checkpoint = max_ts.isoformat()
-        else:
-            new_checkpoint = str(max_ts)
+        # Advance each station's checkpoint to the max timestamp seen for
+        # that station in this batch (not the batch-wide max — see
+        # CheckpointManager's docstring for why that was the bug).
+        per_station_max = {}
+        for doc in batch:
+            station_name = doc.get('station_name')
+            if not station_name:
+                continue
+            ts = doc['timestamp']
+            if station_name not in per_station_max or ts > per_station_max[station_name]:
+                per_station_max[station_name] = ts
+
+        new_checkpoint = dict(checkpoint)
+        for station_name, ts in per_station_max.items():
+            # Firestore returns DatetimeWithNanoseconds; convert to ISO string for JSON storage.
+            new_checkpoint[station_name] = ts.isoformat() if hasattr(ts, 'isoformat') else str(ts)
         return new_checkpoint
 
     def main_loop(self):

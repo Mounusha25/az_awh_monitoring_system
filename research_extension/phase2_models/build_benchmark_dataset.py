@@ -66,9 +66,19 @@ CANDIDATE_OFFSETS = [pd.Timedelta(minutes=5 * k) for k in range(WINDOW_MINUTES /
 # Rough average number of windows a single injected fault qualifies as
 # anomalous (i.e. clears MIN_OVERLAP_FRACTION below), used only to size how
 # many faults to inject per station to hit the target anomaly fraction.
-# Empirically ~4 under the overlap-fraction labeling rule (was ~19 when any
-# nonzero overlap counted) — recalibrate this if MIN_OVERLAP_FRACTION changes.
-AVG_WINDOWS_PER_FAULT = 4
+# Recalibrated 2026-07-27: measured 12.6-13.1 windows/fault empirically
+# against the current MIN_OVERLAP_FRACTION=0.5 rule (built 5,067/9,021
+# windows from 222/395 faults). The old constant (4) was stale from before
+# MIN_OVERLAP_FRACTION was tightened to 0.5 in round 1 and was never
+# recalibrated after — it under-estimated windows/fault by ~3.2x, which
+# silently over-injected faults by the same factor and pushed realized
+# anomaly fraction to ~55% against every dataset build since, instead of the
+# intended ~17.5%. That inflated rate made "always predict anomalous" score
+# detection F1≈0.71 by itself — indistinguishable from what every model was
+# actually reporting, i.e. detection F1 comparisons across models have been
+# uninformative (all clustered at/below the trivial-baseline ceiling) since
+# round 1. See PENDING_TASKS.md Round 7.
+AVG_WINDOWS_PER_FAULT = 13
 
 # Stations 3 and 6 hold ~99% of real sensor history (the other 6 are lightly-used
 # test/dev units with 6-44 windows each — see CLAUDE.md / PENDING_TASKS.md). All 8
@@ -311,24 +321,55 @@ def label_windows(windows: pd.DataFrame, fault_log: list[dict]) -> pd.DataFrame:
 # ---------------------------------------------------------------------------
 
 def time_based_split(windows: pd.DataFrame) -> dict[str, pd.DataFrame]:
-    windows = windows.sort_values("window_start").reset_index(drop=True)
-    t1 = windows["window_start"].quantile(0.70)
-    t2 = windows["window_start"].quantile(0.85)
+    """Per-station time-based split: quantile cutoffs are computed on EACH
+    station's own window_start distribution, not on the combined timeline.
+
+    A single global quantile cut was found (2026-07-27) to silently drop one
+    station from val entirely: station 3 and station 6 have different data
+    density and gaps over the ~11-month deployment, and a global 70th/85th
+    percentile cut (dominated by whichever station has more windows) can land
+    inside a low-density stretch for the other station, leaving it with zero
+    windows in that slice. Every "tuned on val" threshold before this fix was
+    silently blind to station 3 as a result. Splitting per station guarantees
+    every station with enough windows contributes to train/val/test, at the
+    cost of the exact split fractions no longer being identical in absolute
+    wall-clock terms across stations (each station still gets its own
+    contiguous, embargoed, chronologically-ordered 70/15/15 split).
+    """
     embargo = WINDOW  # one window's worth of gap so no window spans a boundary
 
-    train = windows[windows["window_end"] <= t1]
-    val = windows[(windows["window_start"] >= t1 + embargo) & (windows["window_end"] <= t2)]
-    test = windows[windows["window_start"] >= t2 + embargo]
+    train_parts, val_parts, test_parts = [], [], []
+    for station_id, station_windows in windows.groupby("station_id"):
+        station_windows = station_windows.sort_values("window_start").reset_index(drop=True)
+        t1 = station_windows["window_start"].quantile(0.70)
+        t2 = station_windows["window_start"].quantile(0.85)
 
-    return {"train": train, "val": val, "test": test}
+        train_parts.append(station_windows[station_windows["window_end"] <= t1])
+        val_parts.append(station_windows[
+            (station_windows["window_start"] >= t1 + embargo) & (station_windows["window_end"] <= t2)
+        ])
+        test_parts.append(station_windows[station_windows["window_start"] >= t2 + embargo])
+
+    return {
+        "train": pd.concat(train_parts, ignore_index=True),
+        "val": pd.concat(val_parts, ignore_index=True),
+        "test": pd.concat(test_parts, ignore_index=True),
+    }
 
 
 # ---------------------------------------------------------------------------
 # Orchestration
 # ---------------------------------------------------------------------------
 
-def build_dataset(seed: int, target_anomaly_frac: float,
-                   stations: list[int] = INCLUDED_STATIONS) -> tuple[dict[str, pd.DataFrame], list[dict]]:
+def build_windows(seed: int, target_anomaly_frac: float,
+                   stations: list[int] = INCLUDED_STATIONS) -> tuple[pd.DataFrame, list[dict]]:
+    """Fault injection + windowing + labeling, WITHOUT the train/val/test split.
+    Faults are placed independently of any later split boundary (see
+    inject_synthetic_faults.py — placement is uniform over each station's full
+    timeline), so this combined, unsplit dataframe can be split more than one
+    way — e.g. rotating_kfold_eval.py's walk-forward folds — without
+    re-injecting faults each time and changing what "the same fault" means
+    across folds."""
     rng = np.random.default_rng(seed)
 
     print(f"[Benchmark] Loading raw station data from PostgreSQL (stations={stations})...")
@@ -362,6 +403,12 @@ def build_dataset(seed: int, target_anomaly_frac: float,
               f"{windows['is_anomaly'].mean() * 100:.1f}% anomalous")
 
     combined = pd.concat(all_windows, ignore_index=True)
+    return combined, all_faults
+
+
+def build_dataset(seed: int, target_anomaly_frac: float,
+                   stations: list[int] = INCLUDED_STATIONS) -> tuple[dict[str, pd.DataFrame], list[dict]]:
+    combined, all_faults = build_windows(seed, target_anomaly_frac, stations)
     splits = time_based_split(combined)
     return splits, all_faults
 
