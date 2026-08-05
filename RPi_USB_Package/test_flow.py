@@ -1,4 +1,3 @@
-# test_flow.py
 import time
 from read_flow import FlowMeterReader
 

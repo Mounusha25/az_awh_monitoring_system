@@ -16,4 +16,7 @@ mlflow==3.14.0
 
 # Models (Phase 2 model training, not needed for build_benchmark_dataset.py alone)
 scikit-learn==1.6.1
-torch==2.6.0
+# torch==2.6.0 has no wheel for Python 3.14 (used for lstm_attribution_model.py,
+# round 9) — resolved to 2.13.0 instead, same as requirements_phase1.txt's note
+# about resolving versions for Python 3.14 / macOS arm64.
+torch==2.13.0

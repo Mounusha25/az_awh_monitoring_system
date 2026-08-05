@@ -48,11 +48,24 @@ from inject_synthetic_faults import inject_faults
 
 DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://mounusha@localhost:5432/awh_db")
 
-FEATURE_COLUMNS = [
-    "temperature", "humidity", "velocity",
-    "outtake_temperature", "outtake_humidity", "outtake_velocity",
-    "weight", "voltage", "power", "energy",
-]
+# Round 13 (2026-07-31): scoped down from all 10 sensor columns to the 4 the
+# lab actually cares about (temperature, humidity, weight/mass, power).
+# Empirically justified, not just a preference: post-hoc restricting the
+# attribution argmax to these 4 (leaving the other 6 as trained candidates,
+# just never selectable) already lifted LSTM attribution F1 0.224->0.279 and
+# classifier 0.172->0.254 on the 8-station benchmark, while leaving Isolation
+# Forest flat (0.162->0.184) — expected, since it scores each feature with an
+# independent per-feature forest whose calibration doesn't depend on how many
+# other forests exist. Dropping the other 6 columns entirely (not just as
+# output candidates, but as model INPUT) targets two things a post-hoc
+# restriction couldn't: (a) concentrates the same total fault budget onto 4
+# features instead of 10 (~2.5x more training instances per feature — the
+# same density lever that took the LSTM from worst to best in round 12), and
+# (b) removes the noisy features (velocity/voltage/outtake_*) as an input
+# contamination path, not just an output one — every round back to 6 found
+# these specific columns' larger natural variance hijacking the joint
+# classifier/LSTM's decision. See PENDING_TASKS.md Round 13.
+FEATURE_COLUMNS = ["temperature", "humidity", "weight", "power"]
 
 WINDOW_MINUTES = 30
 SLIDE_MINUTES = 5
@@ -80,11 +93,14 @@ CANDIDATE_OFFSETS = [pd.Timedelta(minutes=5 * k) for k in range(WINDOW_MINUTES /
 # round 1. See PENDING_TASKS.md Round 7.
 AVG_WINDOWS_PER_FAULT = 13
 
-# Stations 3 and 6 hold ~99% of real sensor history (the other 6 are lightly-used
-# test/dev units with 6-44 windows each — see CLAUDE.md / PENDING_TASKS.md). All 8
-# were attempted; the rest are excluded here rather than diluting the "normal"
-# distribution with near-empty stations. Override with --stations for a different scope.
-INCLUDED_STATIONS = [3, 6]
+# Round 12 (2026-07-31): the "only stations 3/6 have real volume" assumption below
+# was itself an artifact of a stale local Postgres DB — the ingestion worker hadn't
+# run in ~2 weeks and, before that, had never caught up several stations' full
+# Firestore backlog. After running a full catch-up, stations 1/2/4/7 turn out to
+# have substantial, clean real volume (11K-305K rows each) that was simply never
+# ingested locally; station 9 is a newly-active, currently-live station. Only
+# station 8 (4 rows total) is negligible. See PENDING_TASKS.md Round 12.
+INCLUDED_STATIONS = [1, 2, 3, 4, 5, 6, 7, 9]
 
 DATA_DIR = os.path.join(os.path.dirname(__file__), "data")
 
@@ -257,6 +273,67 @@ def compute_windows(df: pd.DataFrame, station_id: int, starts: np.ndarray,
 
 
 # ---------------------------------------------------------------------------
+# Real dead-sensor detection — Round 10 (2026-07-29)
+# ---------------------------------------------------------------------------
+
+# A feature reading the exact same value for a full day (station 3's humidity
+# pinned at 100.0, station 6's power/energy/voltage pinned at 0.0 — both
+# confirmed real, undocumented hardware failures, not synthetic faults or
+# real atmospheric behavior: genuine sensor noise never produces literally
+# zero variance across 1,000+ readings) is a frozen/dead sensor, not a quiet
+# one. std_epsilon this small only catches that; a real sensor's quietest
+# still-alive periods have far more than 1e-6 of variance.
+DEAD_PERIOD_STD_EPSILON = 1e-6
+# Below this many readings in a day, "zero variance" could just mean "barely
+# any data that day" rather than a genuinely frozen sensor.
+DEAD_PERIOD_MIN_READINGS_PER_DAY = 20
+
+
+def detect_dead_periods(df: pd.DataFrame, station_id: int,
+                         feature_columns: list[str] = FEATURE_COLUMNS) -> list[dict]:
+    """Flags real (non-injected) stretches where a feature's raw reading is
+    frozen at a constant value for a full day or more. Found 2026-07-29
+    (PENDING_TASKS.md Round 10) covering large, undocumented fractions of
+    both stations' data — including 100% of both stations' test splits under
+    the pre-fix benchmark. Left unexcluded, these silently corrupt (a) the
+    rolling 'clean' baseline in compute_windows (a dead sensor's zero real
+    variance collapses baseline_std to 0, forcing safe_std=NaN and erasing
+    that feature's stat columns for every window in the dead stretch,
+    including any synthetic fault injected onto the SAME feature during the
+    SAME stretch — undetectable by construction, not by model deficiency),
+    and (b) fault placement, if inject_faults ever lands a fault on an
+    already-dead feature. Returned in the same shape as fault_log entries
+    (station_id, parameter, start, end) so both consumers can treat a dead
+    period exactly like a known real fault to exclude."""
+    day = df["time"].dt.floor("1D")
+    periods = []
+    for feature in feature_columns:
+        daily = df.groupby(day)[feature].agg(["std", "count"])
+        dead_days = daily[
+            (daily["std"].fillna(0.0) < DEAD_PERIOD_STD_EPSILON)
+            & (daily["count"] >= DEAD_PERIOD_MIN_READINGS_PER_DAY)
+        ]
+        if dead_days.empty:
+            continue
+
+        dead_day_list = sorted(dead_days.index)
+        run_start = prev = dead_day_list[0]
+        for d in dead_day_list[1:]:
+            if (d - prev) > pd.Timedelta(days=1):
+                periods.append({
+                    "station_id": station_id, "parameter": feature,
+                    "start": run_start, "end": prev + pd.Timedelta(days=1),
+                })
+                run_start = d
+            prev = d
+        periods.append({
+            "station_id": station_id, "parameter": feature,
+            "start": run_start, "end": prev + pd.Timedelta(days=1),
+        })
+    return periods
+
+
+# ---------------------------------------------------------------------------
 # Labeling — attach is_anomaly / anomaly_type / causal_parameter
 # ---------------------------------------------------------------------------
 
@@ -362,14 +439,32 @@ def time_based_split(windows: pd.DataFrame) -> dict[str, pd.DataFrame]:
 # ---------------------------------------------------------------------------
 
 def build_windows(seed: int, target_anomaly_frac: float,
-                   stations: list[int] = INCLUDED_STATIONS) -> tuple[pd.DataFrame, list[dict]]:
+                   stations: list[int] = INCLUDED_STATIONS,
+                   return_faulted: bool = False,
+                   ) -> (tuple[pd.DataFrame, list[dict], list[dict]]
+                         | tuple[pd.DataFrame, list[dict], list[dict], dict[int, pd.DataFrame]]):
     """Fault injection + windowing + labeling, WITHOUT the train/val/test split.
     Faults are placed independently of any later split boundary (see
     inject_synthetic_faults.py — placement is uniform over each station's full
     timeline), so this combined, unsplit dataframe can be split more than one
     way — e.g. rotating_kfold_eval.py's walk-forward folds — without
     re-injecting faults each time and changing what "the same fault" means
-    across folds."""
+    across folds.
+
+    Always also returns the real dead-sensor periods detected per station
+    (see detect_dead_periods, Round 10) — these are excluded from both fault
+    placement (inject_faults) and the rolling clean baseline (compute_windows)
+    regardless of whether the caller wants to log them.
+
+    `return_faulted=True` additionally returns the per-station perturbed raw
+    (not windowed) dataframes — used by build_sequence_cache.py to build
+    per-timestep sequences for the LSTM attribution model, which needs the raw
+    readings inside each window, not just its summary stats. Same seed +
+    stations + target fraction as a prior run reproduces bit-identical
+    faulted_df/fault_log (rng is a pure function of seed and station
+    iteration order), so this is safe to call again against already-built
+    train/val/test.parquet without re-deriving the split.
+    """
     rng = np.random.default_rng(seed)
 
     print(f"[Benchmark] Loading raw station data from PostgreSQL (stations={stations})...")
@@ -379,11 +474,20 @@ def build_windows(seed: int, target_anomaly_frac: float,
 
     all_windows = []
     all_faults: list[dict] = []
+    all_dead_periods: list[dict] = []
+    faulted_data: dict[int, pd.DataFrame] = {}
 
     for station_id, df in station_data.items():
         starts = candidate_window_starts(df["time"])
         if len(starts) == 0:
             continue
+
+        dead_periods = detect_dead_periods(df, station_id)
+        all_dead_periods.extend(dead_periods)
+        if dead_periods:
+            affected = sorted({d["parameter"] for d in dead_periods})
+            print(f"[Benchmark] Station {station_id}: real dead-sensor periods detected on "
+                  f"{affected} — excluded from fault placement and baseline")
 
         # Estimate total windows to size fault count for the target anomaly fraction
         n_windows_estimate = len(starts)
@@ -391,10 +495,17 @@ def build_windows(seed: int, target_anomaly_frac: float,
 
         faulted_df, fault_log = inject_faults(
             df, station_id, FEATURE_COLUMNS, rng, n_faults=n_faults,
+            dead_periods=dead_periods,
         )
         all_faults.extend(fault_log)
+        if return_faulted:
+            faulted_data[station_id] = faulted_df
 
-        windows = compute_windows(faulted_df, station_id, starts, fault_log)
+        # Baseline exclusion: real dead periods get treated exactly like a known
+        # fault for the "clean" reference series, but NOT passed to label_windows
+        # below — dead sensors aren't synthetic faults and must never become a
+        # causal_parameter ground-truth label.
+        windows = compute_windows(faulted_df, station_id, starts, fault_log + dead_periods)
         windows = label_windows(windows, fault_log)
         all_windows.append(windows)
 
@@ -403,14 +514,17 @@ def build_windows(seed: int, target_anomaly_frac: float,
               f"{windows['is_anomaly'].mean() * 100:.1f}% anomalous")
 
     combined = pd.concat(all_windows, ignore_index=True)
-    return combined, all_faults
+    if return_faulted:
+        return combined, all_faults, all_dead_periods, faulted_data
+    return combined, all_faults, all_dead_periods
 
 
 def build_dataset(seed: int, target_anomaly_frac: float,
-                   stations: list[int] = INCLUDED_STATIONS) -> tuple[dict[str, pd.DataFrame], list[dict]]:
-    combined, all_faults = build_windows(seed, target_anomaly_frac, stations)
+                   stations: list[int] = INCLUDED_STATIONS,
+                   ) -> tuple[dict[str, pd.DataFrame], list[dict], list[dict]]:
+    combined, all_faults, all_dead_periods = build_windows(seed, target_anomaly_frac, stations)
     splits = time_based_split(combined)
-    return splits, all_faults
+    return splits, all_faults, all_dead_periods
 
 
 def log_to_mlflow(splits: dict[str, pd.DataFrame], all_faults: list[dict], seed: int, target_frac: float):
@@ -447,7 +561,7 @@ def main():
     args = parser.parse_args()
 
     stations = [int(s) for s in args.stations.split(",")] if args.stations else INCLUDED_STATIONS
-    splits, all_faults = build_dataset(args.seed, args.target_anomaly_frac, stations)
+    splits, all_faults, all_dead_periods = build_dataset(args.seed, args.target_anomaly_frac, stations)
 
     os.makedirs(DATA_DIR, exist_ok=True)
     for split_name, df in splits.items():
@@ -458,6 +572,11 @@ def main():
     fault_log_path = os.path.join(DATA_DIR, "fault_log.csv")
     pd.DataFrame(all_faults).to_csv(fault_log_path, index=False)
     print(f"[Benchmark] Wrote {len(all_faults):,} fault records to {fault_log_path}")
+
+    dead_periods_path = os.path.join(DATA_DIR, "dead_periods.csv")
+    pd.DataFrame(all_dead_periods).to_csv(dead_periods_path, index=False)
+    print(f"[Benchmark] Wrote {len(all_dead_periods):,} real dead-sensor periods to {dead_periods_path} "
+          f"(Round 10 — excluded from fault placement and baseline)")
 
     log_to_mlflow(splits, all_faults, args.seed, args.target_anomaly_frac)
 

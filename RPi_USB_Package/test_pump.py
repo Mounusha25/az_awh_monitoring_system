@@ -1,10 +1,3 @@
-# test_pump.py
-# ===============================
-
-# Simple tester for PumpController
-# ===============================
-
-import time
 from pump_controller import PumpController
 
 def pump_status_cb(status):

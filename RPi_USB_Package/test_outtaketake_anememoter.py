@@ -1,9 +1,3 @@
-# test_anemometer_outtake.py
-# ===============================
-# Simple tester for outtake anemometer
-# Uses outtake_anemometer() from outtake_anemometer.py
-# ===============================
-
 import time
 from outtake_anemometer import outtake_anemometer
 

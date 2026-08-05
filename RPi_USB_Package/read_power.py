@@ -1,4 +1,3 @@
-# read_power.py
 import serial
 import struct
 import time
@@ -58,7 +57,6 @@ class PowerMeterReader:
         return crc
 
     def _poll_once(self):
-        # Build request: slave=0x01, fn=0x04, start=0x0000, count=0x000A
         slave_address = 0x01
         function_code = 0x04
         start_address = 0x0000
@@ -67,14 +65,12 @@ class PowerMeterReader:
         crc = self._crc16(req_wo_crc)
         request = req_wo_crc + struct.pack('<H', crc)
 
-        # send + read
         self._ser.write(request)
         response = self._ser.read(25)
         if len(response) != 25:
             print("[Power] Incomplete response")
             return None
 
-        # parse
         try:
             voltage_raw = struct.unpack('>H', response[3:5])[0]
             current_low_raw = struct.unpack('>H', response[5:7])[0]

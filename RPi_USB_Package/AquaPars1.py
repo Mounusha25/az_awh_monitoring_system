@@ -1,25 +1,17 @@
-# testunit.py
-# ============================================
-# Test Unit Controller (Main Process)
-# - Uses read_balance.py for Balance
-# - Uses read_power.py for Power Meter
-# - Uses read_flow.py for Flow Meter
-# - Reads Intake/Outtake Anemometers
-# - Controls Pump via PumpController
-# - Saves CSV, uploads to Cloud, optional email sending
-# ============================================
+"""
+Main process for an AWH station: reads all sensors (balance, power meter,
+flow meter, intake/outtake anemometers), drives the pump, saves CSV rows,
+and uploads readings to the cloud. Wires everything into the Tkinter UI.
+"""
 
-# ---------- Standard Library ----------
 import os
 import threading
 import time
 import csv
 from datetime import datetime, timedelta
 
-# ---------- Third-Party ----------
 import requests
 
-# ---------- Local Modules ----------
 from intake_anemometer import intake_anemometer
 from outtake_anemometer import outtake_anemometer
 from pump_controller import PumpController
@@ -28,23 +20,14 @@ from read_power import PowerMeterReader
 from read_flow import FlowMeterReader
 from awh_ui_layout import AWHControlPanel
 
-# ============================================
-# Configuration / Constants
-# ============================================
-
 STATION_NAME = "station_AquaPars #2 @Power Station, Tempe"
 CLOUD_URL = "https://us-central1-awh-project-460421.cloudfunctions.net/receive_data"
 
-# Upload throttle (seconds)
 CLOUD_UPLOAD_EVERY_SEC = 60  # send to cloud at most once every 60s
 
-# Reader watchdog
 READER_STALE_SEC = 45        # if no new data for this many seconds, restart that reader
 WATCHDOG_POLL_SEC = 5        # how often the watchdog checks staleness
 
-# ============================================
-# Utilities
-# ============================================
 
 def send_to_cloud(station_name, data):
     """POST one measurement record to the Cloud Function."""
@@ -74,19 +57,16 @@ def send_to_cloud(station_name, data):
     except Exception as e:
         print(f"[Cloud Upload] Failed: {e}")
 
-# ============================================
-# Core Controller
-# ============================================
 
-class BalanceReader:
+class StationController:
     """
-    Main controller for reading sensors and coordinating outputs.
+    Coordinates every sensor reader, the pump, CSV logging, and cloud upload
+    for one AWH station.
     - Balance from read_balance.BalanceSerialReader
     - Power meter from read_power.PowerMeterReader
     - Flow meter from read_flow.FlowMeterReader
     - Intake/Outtake anemometers
     - Pump control is delegated to PumpController
-    - CSV saving & Cloud upload
     """
 
     def __init__(self, callback, csv_dir, update_pump_status_callback, pump: PumpController):
@@ -96,17 +76,14 @@ class BalanceReader:
         self.sent_files = set()
         self.running = False
 
-        # Timers & settings
         self.interval = 10
         self.file_saving_interval_minutes = 1
         self.start_time = None
         self.last_file_time = datetime.now()
 
-        # Cloud upload throttle
         self.cloud_upload_interval_secs = CLOUD_UPLOAD_EVERY_SEC
         self._last_cloud_upload_ts = 0.0  # 0 => first call uploads immediately
 
-        # Live data
         self.current_weight = None
         self.balance_line = None
         self.power_tuple = None
@@ -114,23 +91,20 @@ class BalanceReader:
         self.intake_air_data = (None, None, None, "m/s")
         self.outtake_air_data = (None, None, None, "m/s")
 
-        # Last-seen timestamps for watchdog
         now_ts = time.time()
         self._last_balance_ts = now_ts
         self._last_power_ts = now_ts
         self._last_flow_ts = now_ts
 
-        # Pump
         self.pump = pump
         self.pump.set_status_callback(update_pump_status_callback)
 
-        # Station identity (can be overridden via UI before start)
+        # Station identity — can be overridden via the UI before start_reading()
         self.station_name = STATION_NAME
 
-        # CSV
         self.create_new_csv_file()
 
-        # Readers (created but started in start_reading)
+        # Readers are created but only started in start_reading()
         self.balance_reader = None
         self.power_reader = None
         self.flow_reader = None
@@ -191,14 +165,13 @@ class BalanceReader:
 
     # ---------- Callbacks from readers ----------
     def _on_balance_line(self, line: str):
-        # Receiving any line means the connection is alive
+        # Receiving any line means the connection is alive, regardless of whether it parses
         self._last_balance_ts = time.time()
         parsed = parse_balance_line(line)
         if parsed:
             ST, GS, check, weight, unit = parsed
             self.current_weight = weight
             self.balance_line = (ST, GS, check, weight, unit)
-            # Keep your auto pump logic
             try:
                 self.pump.auto_check(weight)
             except Exception as e:
@@ -227,7 +200,7 @@ class BalanceReader:
             'Intake Air Temperature (°C)', 'Intake Air Velocity', 'Intake Air Humidity (%)',
             'Outtake Air Temperature (°C)', 'Outtake Air Velocity', 'Outtake Air Humidity (% )'
         ])
-        self.csv_file.flush()  # write header to disk immediately
+        self.csv_file.flush()
         self.csv_files.append(file_path)
         print(f"[CSV] New file created: {file_path}")
 
@@ -238,12 +211,10 @@ class BalanceReader:
         self.running = True
         self.start_time = time.time()
 
-        # Start readers
         self._start_balance_reader()
         self._start_power_reader()
         self._start_flow_reader()
 
-        # Worker threads
         threading.Thread(target=self.save_data_to_csv_interval, daemon=True).start()
         threading.Thread(target=self.read_intake_air_data, daemon=True).start()
         threading.Thread(target=self.read_outtake_air_data, daemon=True).start()
@@ -311,7 +282,7 @@ class BalanceReader:
         time_str = now.strftime('%H:%M:%S')
         op_time = self._operation_time_hms()
 
-        # --- Unpack each sensor independently; use None if not yet received ---
+        # Unpack each sensor independently; fall back to None if not yet received
         if self.balance_line:
             ST, GS, check, weight, unit = self.balance_line
         else:
@@ -334,7 +305,7 @@ class BalanceReader:
         t_out, v_out, h_out, v_unit_out = self.outtake_air_data
         pump_status_bit = 1 if self.pump.is_on else 0
 
-        # Always write CSV row (every second) regardless of which sensors have data
+        # Row is written every second regardless of which sensors currently have data
         self.csv_writer.writerow([
             date_str, time_str, ST, GS, check, weight, unit, pump_status_bit,
             V, A, W, Wh, op_time,
@@ -342,9 +313,8 @@ class BalanceReader:
             t_in, f"{v_in} {v_unit_in}" if v_in is not None else None, h_in,
             t_out, f"{v_out} {v_unit_out}" if v_out is not None else None, h_out
         ])
-        self.csv_file.flush()  # immediately write buffer to disk
+        self.csv_file.flush()
 
-        # Throttled cloud upload (every CLOUD_UPLOAD_EVERY_SEC)
         if (now_ts - self._last_cloud_upload_ts) >= self.cloud_upload_interval_secs:
             send_to_cloud(self.station_name, {
                 "temperature": t_in, "humidity": h_in, "velocity": v_in, "unit": v_unit_in,
@@ -355,7 +325,6 @@ class BalanceReader:
             })
             self._last_cloud_upload_ts = now_ts
 
-        # Update UI every second
         if self.callback:
             self.callback(",".join(map(str, [
                 date_str, time_str, ST, GS, check, weight, unit, pump_status_bit,
@@ -384,20 +353,16 @@ class BalanceReader:
             try:
                 now_ts = time.time()
 
-                # Balance stale?
                 if (now_ts - self._last_balance_ts) > READER_STALE_SEC:
                     print("[Watchdog] Balance reader stale. Attempting restart...")
                     self._restart_reader("balance")
-                    # After attempting restart, give the device a moment
-                    time.sleep(2)
+                    time.sleep(2)  # give the device a moment before checking the next reader
 
-                # Power stale?
                 if (now_ts - self._last_power_ts) > READER_STALE_SEC:
                     print("[Watchdog] Power reader stale. Attempting restart...")
                     self._restart_reader("power")
                     time.sleep(2)
 
-                # Flow stale?
                 if (now_ts - self._last_flow_ts) > READER_STALE_SEC:
                     print("[Watchdog] Flow reader stale. Attempting restart...")
                     self._restart_reader("flow")
@@ -414,7 +379,7 @@ class BalanceReader:
                 h, t, v, unit = intake_anemometer()
                 self.intake_air_data = (t, max(0, v), h, unit)
             except Exception as e:
-                # If USB sensor disappears, just log and try again next loop
+                # USB sensor disappearing is expected in the field; log and retry next loop
                 print(f"[Intake] Error: {e}")
             time.sleep(self.interval)
 
@@ -424,30 +389,24 @@ class BalanceReader:
                 h, t, v, unit = outtake_anemometer()
                 self.outtake_air_data = (t, max(0, v), h, unit)
             except Exception as e:
-                # If USB sensor disappears, just log and try again next loop
                 print(f"[Outtake] Error: {e}")
             time.sleep(self.interval)
 
-# ============================================
-# Entry Point
-# ============================================
 
 def main():
     csv_dir = 'measure_data'
     os.makedirs(csv_dir, exist_ok=True)
 
     pump = PumpController(pin=17, status_callback=None, default_duration_min=2, initial_threshold_g=0)
-    controller = BalanceReader(
+    controller = StationController(
         callback=None,
         csv_dir=csv_dir,
         update_pump_status_callback=None,
         pump=pump
     )
 
-    # Create UI and wire it to backend controller
     app = AWHControlPanel(controller=controller, backend_url="https://az-awh-monitoring-system.onrender.com")
 
-    # Connect backend callbacks to UI updates
     controller.callback = app.update_status
     controller.pump.set_status_callback(app.update_pump_status)
 

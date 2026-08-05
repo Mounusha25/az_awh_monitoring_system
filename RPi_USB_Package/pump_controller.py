@@ -1,4 +1,3 @@
-# pump_controller.py (gpiozero version — works on RPi 4 and RPi 5)
 import threading
 import time
 from gpiozero import OutputDevice

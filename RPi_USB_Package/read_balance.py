@@ -1,8 +1,7 @@
-# read_balance.py
 import os
 import time
 import threading
-from typing import Optional, Callable, Tuple, Any
+from typing import Optional, Callable
 
 import serial
 
@@ -11,14 +10,12 @@ class BalanceSerialReader:
     """
     Reads balance lines from a serial port and pushes raw lines to a callback.
 
-    Fixes:
-    - Avoid hard-coding the changing by-id suffix (0000000X).
-    - Auto-detect Prolific/Dtech USB-Serial adapter from /dev/serial/by-id.
-    - Reconnect on unplug/replug.
+    Auto-detects the Prolific/Dtech USB-Serial adapter via /dev/serial/by-id
+    instead of a hard-coded port, and reconnects automatically on unplug/replug.
     """
 
     BY_ID_DIR = "/dev/serial/by-id"
-    # Your environment shows these two patterns:
+    # This station's adapter shows up as one of two by-id name patterns:
     # - usb-Prolific_Technology_Inc._Dtech_USB-Serial_Controller_...
     # - usb-Prolific_Technology_Inc._USB-Serial_Controller_D-...
     PROLIFIC_MATCH_SUBSTRINGS = (
@@ -35,8 +32,7 @@ class BalanceSerialReader:
         timeout: float = 0.1,
         reconnect_delay: float = 1.0,
     ):
-        # If port is provided, use it; otherwise auto-detect.
-        self.port = port
+        self.port = port  # if not provided, auto-detected in _find_balance_port()
         self.baudrate = int(baudrate)
         self.timeout = float(timeout)
         self.interval = int(interval)
@@ -46,10 +42,6 @@ class BalanceSerialReader:
         self._ser: Optional[serial.Serial] = None
         self._running = False
         self._thread: Optional[threading.Thread] = None
-
-    @staticmethod
-    def _is_by_id_path(p: str) -> bool:
-        return p.startswith("/dev/serial/by-id/")
 
     def _find_balance_port(self) -> Optional[str]:
         """
@@ -69,7 +61,6 @@ class BalanceSerialReader:
             full = os.path.join(self.BY_ID_DIR, name)
             if not os.path.islink(full):
                 continue
-            # match required substrings
             if all(s in name for s in self.PROLIFIC_MATCH_SUBSTRINGS):
                 candidates.append(full)
 
@@ -85,7 +76,6 @@ class BalanceSerialReader:
         Decide which port to use right now.
         """
         if self.port:
-            # user-specified port
             if os.path.exists(self.port):
                 return self.port
             return None

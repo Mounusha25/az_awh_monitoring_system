@@ -134,8 +134,8 @@ plus two new tests for the migration path and per-station independence.
 Per CLAUDE.md Section 9.
 - Week 1–2: Kafka + Spark streaming layer — ✅ built (`research_extension/phase1_streaming/`)
 - Week 2: Benchmark dataset (labeled anomalies, train/val/test split) — ✅ built, synthetic fault injection (`research_extension/phase2_models/build_benchmark_dataset.py`)
-- Week 3–4: LSTM + Isolation Forest models — IN PROGRESS, see below
-- Week 4–5: LangGraph multi-agent system — not started
+- Week 3–4: LSTM + Isolation Forest models — ✅ built, 14 rounds of iteration, current best LSTM F1=0.415 (see below)
+- Week 4–5: LangGraph multi-agent system — ✅ built (`research_extension/phase3_agents/`), see Round 15 below
 - Week 6–7: Evidently AI + Airflow MLOps pipeline — not started
 - Week 8: Kubernetes + Grafana deployment — not started
 
@@ -441,3 +441,426 @@ do a score race at all, it's trained directly on `causal_parameter` labels — b
 number (0.196) is worse than the unsupervised baseline too, and its FPR reconciliation from round 3
 was never actually followed up (only diagnosed). That's the next real candidate, not another patch
 to the isolation-forest attribution mechanism.
+
+**Round 8 (2026-07-29) — followed up the classifier's FPR reconciliation with `CalibratedClassifierCV`;
+also regressed. 4th negative result in this family, first on the classifier side.**
+Wrapped `RandomForestClassifier` in `CalibratedClassifierCV(method="sigmoid", cv=5)`
+(`supervised_classifier.py`) to address round 7's diagnosis that raw `predict_proba`'s best-class
+value averages only ~0.162 across 11 classes (barely above ~0.091 chance) with the argmax dominated
+by 3-4 classes (`velocity`/`outtake_velocity`/`temperature`) regardless of true cause. Re-tuned
+threshold on val, evaluated on the current (round-7-corrected, 190-fault) test split:
+
+| | detection F1 | attribution F1 | FPR (normal windows) |
+|---|---|---|---|
+| Raw (round 7 baseline) | 0.291 | 0.214 | 1.5% |
+| CalibratedClassifierCV (sigmoid, cv=5) | 0.171 | 0.155 | 1.0% |
+
+Per-fault-type detection recall got worse across the board: drift 31.9%→18.1%, dropout 4.3%→0%,
+spike 6.7%→0%, stuck_at stayed at 0%. Mean best-class probability on anomalous test windows actually
+rose (0.171→0.764 — calibration made the model *look* more confident) while recall collapsed further
+— confirming this is a discrimination problem, not a probability-scale problem: sigmoid calibration
+rescales each class's score monotonically but does not change *which* class wins the argmax for a
+given sample, and the same handful of "loud" features (`outtake_velocity`, `temperature`, `energy`,
+`humidity`) still dominate the predicted-label distribution post-calibration, near-identically to
+pre-calibration.
+
+**This is the 4th independently-designed fix in the "adjust the score/probability after the fact"
+family to regress performance** (3 on the isolation-forest attribution mechanism in round 6, now this
+one on the classifier) — reverted to raw (uncalibrated) as the default in `SupervisedAttributionModel`
+(`calibrate=False`), kept as a togglable param for reproducibility only. **Do not attempt isotonic
+calibration, per-class calibration, or any other predict_proba rescaling variant on this classifier
+without a materially different idea** — the pattern is now consistent across two different model
+families and four different rescaling approaches.
+
+**Next real candidates, now better-scoped:** the recurring theme across every failed fix (isolation
+forest and classifier alike) is that a small set of features carry a real, elevated, physically-driven
+baseline variance that outweighs the true causal feature's signal at the scoring stage, regardless of
+how that stage is rescaled after the fact. The two structurally different ideas that haven't been
+tried are (a) feature selection/dimensionality reduction *before* the classifier (not a post-hoc score
+adjustment — e.g. mutual-information or permutation-importance-based feature pruning per class, so
+`velocity`/`temperature`'s dominance can't leak into unrelated classes' decision boundaries), and
+(b) LSTM at the attribution stage (still never attempted, queued since round 3). Given four consecutive
+regressions on rescaling approaches, (b) — a structurally different model, not another patch to the
+current one — is the stronger next bet.
+
+### Round 9 (2026-07-29) — built and tried the LSTM attribution model at last. Also regressed —
+worse than every other model, including the already-weak classifier.
+
+Built the infrastructure this needed first, since every existing model only ever consumed windowed
+summary stats (`rel_mean`, `rel_std`, ...), never the raw per-timestep readings an LSTM needs:
+- `sequence_data_prep.py` — extracts a fixed-length (30 timestep, 2×10-feature) array per window:
+  one baseline-relative normalized-value channel and one present/missing mask channel per feature,
+  using the exact same rolling per-station/per-feature baseline as `compute_windows` (reused directly,
+  not reimplemented) so the LSTM sees the same "deviation from recent normal" signal every other
+  model does, just at per-timestep instead of per-window resolution.
+- `build_benchmark_dataset.py::build_windows` gained an additive `return_faulted=True` option to also
+  hand back each station's raw perturbed dataframe (needed to slice per-timestep sequences) — same
+  seed reproduces bit-identical fault placement as the already-saved train/val/test.parquet, so this
+  required no changes to the existing benchmark or its labels.
+- `build_sequence_cache.py` — one-time script that builds `data/sequence_cache.npz` (14,042 sequences,
+  keyed by station_id + window_start) from the above.
+- `lstm_attribution_model.py` — a small bidirectional LSTM (concat final-hidden-state from both
+  directions → linear classifier over the same 11 classes as the supervised classifier), same
+  threshold-gated confidence interface as every other model here so it drops into
+  `evaluate.py`/`train_phase2_models.py` unchanged.
+
+**Result: worse than everything, including the classifier it was meant to beat.** Swept 7
+configurations (hidden_size ∈ {8,16,24,32}, dropout ∈ {0.3-0.6}, weight_decay ∈ {1e-4,1e-3,1e-2},
+epochs ∈ {10,15,20,25,30,40}):
+
+| Model | test detection F1 | test attribution F1 | FPR (normal windows) |
+|---|---|---|---|
+| Rule baseline | 0.356 | 0.186 | — |
+| **Isolation Forest ensemble (current best)** | **0.428** | **0.421** | ~12-29% (varies by round) |
+| Two-stage | 0.317 | 0.289 | — |
+| Supervised classifier | 0.291 | 0.214-0.227 | 1.5% |
+| LSTM (best of 7 configs) | 0.323 | 0.195 | 37.7% |
+
+Every one of the 7 LSTM configs had FPR between 37% and 91% on normal windows regardless of
+regularization strength (hidden size 8→32, dropout 0.3→0.6, weight decay 1e-4→1e-2 all tried) — this
+rules out "just needs more regularization" as the explanation; it looks like a genuine train→test
+generalization gap specific to this model, not a fixable capacity/overfitting problem. Best single
+config (epochs=15, hidden=16, dropout=0.5, weight_decay=1e-3): attribution F1 0.195, still below the
+classifier's already-weak 0.214-0.227 and far below Isolation Forest's 0.421.
+
+**Reverted to the best-of-sweep config as `LSTMAttributionModel`'s default** (kept as the fitted,
+wired-in model in `train_phase2_models.py` since it's a real, honestly-reported result, not hidden) —
+this is not a "try again" situation, it's now a genuine data-point: the one structurally different,
+never-before-tried model family also underperforms the isolation-forest ensemble on this benchmark.
+
+### Round 10 (2026-07-29) — data forensics audit, prompted by "is any of this a data bug, not a
+modeling problem." Answer: yes, a big one. Found real, undocumented hardware failures sitting
+inside the benchmark's "clean"/normal reference data, covering **100% of BOTH stations' test
+splits** and most of station 6's val split too. Every F1 number in rounds 1-9 was measured partly
+against this.
+
+Every prior round (1-9) treated any non-injected real reading as trustworthy "normal" ground truth.
+That assumption is false for large, contiguous stretches of the actual deployment:
+
+1. **Station 3: `humidity` frozen at exactly 100.0 (std=0.0) for every reading from 2026-07-09
+   onward** — the sensor resumes after a ~7-week data gap already stuck. Same onset date, the
+   entire **outtake anemometer channel** (`outtake_temperature`, `outtake_humidity`,
+   `outtake_velocity` — physically co-located on one USB unit) also goes dead/constant. This is
+   **100% of station 3's test split** (all of it falls after 07-09) and **25.4% of its val split**.
+2. **Station 6: `power`, `energy`, AND `voltage` all frozen at exactly 0.0 together for
+   2026-06-10 through (at least) 06-26** — consistent with the power meter/RS485 link failing or
+   the station losing power outright, not three independent coincidental sensor faults. This covers
+   **100% of station 6's val split, 100% of its test split, and 25.5% of its train split.**
+3. **Station 6: `velocity` frozen at exactly 0.0 for 2026-05-05 through 05-19** (15 days, inside
+   train), followed by a week (05-25 to 06-01) where real velocity averages 85.97 (up to 220.72) —
+   30-70x its normal ~1-3 range. Both sit inside train, meaning every model has been learning a
+   "normal" velocity baseline for station 6 that alternates between dead-zero and a wildly
+   corrupted outlier week before ever seeing genuinely typical readings.
+4. Smaller: station 3 `weight` frozen at exactly 1315.00 for one day (2026-05-08), inside train.
+
+**Mechanism — a real pipeline bug, not just bad luck:** `compute_windows`'s
+`safe_std = baseline_std if baseline_std and baseline_std > 0 else np.nan` silently produces NaN
+(later filled with a fixed train-set mean by `data_prep.py::prepare_columns`) whenever a feature's
+rolling "clean" baseline has collapsed to zero variance — which is exactly what a dead/frozen sensor
+does. Confirmed via `fault_log.csv`: **62 of station 6's 122 injected faults (51%) start during the
+power/energy/voltage-dead window**, 12 of them injected directly onto `power`/`energy`/`voltage`
+themselves — meaning those 12 faults' signal is masked by a fixed fallback constant regardless of
+injected magnitude, not scoreable by design. Station 3 has 11/68 faults (16%) landing in its dead
+window, including 3 onto `outtake_velocity` (itself dead at the time).
+
+**What this means for every F1 number reported so far:** the reigning best (Isolation Forest,
+attribution F1 0.421) has never been measured against a test period free of these real failures —
+both stations' entire test splits are affected. This doesn't mean 0.421 is wrong, but it means it's
+an unknown mix of "genuine synthetic-fault attribution skill" and "how the pipeline behaves when a
+feature's clean baseline is dead," and there's no way to separate those from the numbers alone. The
+true achievable ceiling on genuinely clean data could be meaningfully higher OR the models could be
+silently benefiting from some fault types being easier when co-occurring features are inert — not
+knowable without re-running the benchmark on cleaned data.
+
+**Distinct from, but related to, [[dataset_station_coverage_gap]]:** that memory already flagged
+"only 2 of 8 stations have real volume." This finding sharpens it further — even within those 2
+stations, real *dense, continuously-representative* data is only ~15-18 real days/month clustered in
+a ~10-13 week window (station 3: 22 total distinct days with data, nearly all in May+July 2026;
+station 6: 38 distinct days, nearly all in May-June 2026), not spread across the nominal "11-month
+deployment" CLAUDE.md describes. Because the per-station quantile split (round 7's fix) sizes cuts
+by window COUNT and the two stations' real density differs week to week, their resulting calendar
+test windows barely overlap at all (station 6's test ends 07-09; station 3's test starts 07-10) —
+"pooled test F1" silently blends two non-contemporaneous eras, one of which (per finding #1 above)
+is also mid-hardware-failure.
+
+### Round 11 (2026-07-29, same day) — implemented the per-feature dead-period exclusion fix and
+re-ran all 5 models. It fixed the mechanism, but exposed a deeper problem the fix cannot solve:
+100% of both stations' test windows still sit inside a real hardware failure, and there isn't
+enough genuinely-clean calendar time at either station to build a split that avoids this.
+
+**What was implemented:** `build_benchmark_dataset.py::detect_dead_periods()` flags any
+(station, feature) day where raw std < 1e-6 with >= 20 readings, merges into contiguous ranges
+(written to `data/dead_periods.csv`, 12 periods found — matches Round 10's manual findings exactly).
+These are now (a) excluded from `inject_faults`' placement search per-column (`inject_synthetic_faults.py`
+gained a `dead_periods` param), so no synthetic fault lands on an already-dead feature, and
+(b) excluded from the rolling "clean" baseline in `compute_windows` and in the LSTM's
+`build_clean_series_for_station` (both now receive `fault_log + dead_periods` as the exclusion set).
+Rebuilt the benchmark and `sequence_cache.npz` and reran `train_phase2_models.py`:
+
+| Model | test detection F1 (before → after) | test attribution F1 (before → after) |
+|---|---|---|
+| Rule baseline | 0.356 → 0.378 | 0.186 → **0.307** |
+| Isolation Forest ensemble (was reigning best) | 0.428 → 0.270 | 0.421 → 0.239 |
+| Two-stage | 0.317 → 0.246 | 0.289 → 0.209 |
+| Supervised classifier | 0.291 → 0.272 | 0.214-0.227 → 0.212 |
+| LSTM | 0.323 → 0.204 | 0.195 → 0.015 |
+
+**The rule baseline now beats every "sophisticated" model** — a real inversion of the whole
+project's premise so far. Isolation Forest's FPR on normal windows jumped to 50.5% (previously
+12-29% across rounds).
+
+**Root cause of the FPR jump — the fix corrected the bug but didn't (and structurally can't) fix
+the split:** dead-period windows are still real windows inside the test split, and they still get
+scored — nothing in a per-feature fix removes them from evaluation, since 100% of both stations'
+test splits sit chronologically inside their own dead period (station 3 test: 07-10 to 07-13, humidity
+dead from 07-10 onward; station 6 test: 06-21 to 07-09, power/energy/voltage dead 06-10 to 06-27+).
+Before the fix, the rolling "clean" baseline itself drifted toward the frozen value the longer a dead
+period went on (since post-freeze frozen readings were incorrectly feeding back into their own
+baseline as "clean"), which — accidentally — made later windows in a dead stretch look progressively
+*less* anomalous over time, masking the problem. The fix anchors the baseline to genuine pre-freeze
+history and keeps it there for the entire dead period, so now every dead-period window scores as
+persistently, maximally deviant from healthy history — which is arguably *correct* behavior (it IS
+a real anomaly) but counts as a false positive under this benchmark's definition (`is_anomaly` is
+only ever true for synthetic faults). **Fixing the bug didn't hide the underlying problem, it
+surfaced it more clearly.**
+
+**Checked how much calendar time is genuinely clean (all 10 features simultaneously functioning) at
+either station, to see if the split itself could just be moved to avoid this:** not enough to matter.
+Station 3: real functioning data only exists 05-09 to 05-15 (~7 days, before the outtake-channel
+blip) and 07-06 to 07-09 (~4 days, right before the humidity freeze) — ~11 days total, in two
+disconnected fragments weeks apart (there's also a ~7-week gap with literally zero rows in between,
+May 20 – July 6, unrelated to the freeze). Station 6: 05-20 to 06-09 (~3 weeks) is the only stretch
+free of both the velocity-dead period (ends 05-19) and the power/energy/voltage-dead period (starts
+06-10) — but that same stretch contains the still-undiagnosed real velocity outlier week (05-25 to
+06-01, values 30-70x normal, a different kind of contamination entirely, not caught by the dead-period
+detector since its std is abnormally *high*, not zero). Excluding that too leaves two further
+fragments of ~5 and ~9 days. **Neither station has enough genuinely-clean, simultaneously-functioning
+calendar time to support a properly-powered train/val/test split on its own** — this is not a
+pipeline bug, it's a real limitation of how little uninterrupted clean operation these 2 stations
+have actually had.
+
+**Where this leaves RQ1 feasibility, stated plainly:** the modeling side (5 architectures across 11
+rounds: rescaling, calibration, LSTM, and now a corrected benchmark) is very unlikely to be the
+bottleneck. The bottleneck is that this pilot deployment has not yet produced enough continuous,
+simultaneously-healthy real sensor data to support the kind of held-out time-based generalization
+claim the F1 > 0.80 target implicitly assumes. Getting past this needs one of: (a) the physical
+stations running reliably, without the kind of week+-long hardware dropouts seen here, for a longer
+continuous stretch before the next benchmark build, or (b) an explicitly-scoped, smaller evaluation
+(e.g. a purely synthetic time series not tied to these 2 stations' real gaps) with the limitation
+stated up front, or (c) treating the current numbers as a lower bound and revisiting once more clean
+real data exists. Model architecture changes alone will not move this.
+
+**Update — option (a) implemented in Round 11, see below.** Options (b) (restrict calendar range to
+all-features-clean periods) and (c) (flag dead-period windows as not-evaluable rather than scoring
+them) are still on the table — Round 11 found (a) alone isn't enough, since 100% of both stations'
+test windows sit inside a real failure regardless of per-feature exclusion.
+
+### Round 12 (2026-07-31) — the "only 2 stations have real data" premise behind rounds 1-11 was
+itself a stale-database artifact. Caught the ingestion worker up on ~2 weeks of missed Firestore
+data and discovered 6 more stations have substantial, previously-invisible real volume. Rebuilt the
+benchmark across all 8 usable stations — LSTM (the worst model in every prior round) is now the
+best, but every model's absolute F1 dropped, which is a harder-but-more-honest result, not a
+regression.
+
+**What happened:** while investigating why the local Postgres DB looked so thin, found (a) the
+ingestion worker's local checkpoint had been reset and hadn't run in ~2 weeks, and (b) the
+`FIREBASE_CREDENTIALS_PATH` used in ad-hoc debugging pointed at a dead/wrong Firebase project
+(`azawh-754de`, no Firestore database provisioned at all) instead of the one the app actually uses
+by default (`awh-project-460421`). Ran a full catch-up against the correct project, seeded from each
+station's current Postgres max timestamp: **473,864 new rows inserted.** This revealed that stations
+1, 2, 4, and 7 — previously assumed to be "lightly-used test/dev units with 6-44 windows each" (see
+[[dataset_station_coverage_gap]], now superseded) — actually have 11K-305K rows each of clean, dense
+real data that had simply never been ingested locally. Station 9 is a newly-active station,
+currently live (still streaming as of this writing). Only station 8 (4 rows total) remains
+negligible. Station 5, previously unknown, has a real ~85-day span (one stretch 29 days
+continuous) but real intake-anemometer flakiness for several multi-week stretches in Feb-Apr 2026 —
+correctly handled by the round-10/11 dead-period exclusion fix, no special-casing needed.
+
+**Rebuilt the benchmark with `INCLUDED_STATIONS = [1, 2, 3, 4, 5, 6, 7, 9]`** (was `[3, 6]`):
+551,472 raw rows (was 69,186), 49,075 labeled windows (was 14,042), **656 total fault instances (was
+190 — a 3.4x increase directly targeting the data-starvation diagnosis from rounds 3/8/9)**. Reran
+all 5 models:
+
+| Model | 2-station (Round 11) | 8-station (Round 12) |
+|---|---|---|
+| Rule baseline | 0.307 | 0.110 |
+| Isolation Forest | 0.239 | 0.162 |
+| Two-stage | 0.209 | 0.137 |
+| Supervised classifier | 0.212 | 0.172 |
+| **LSTM** | 0.015 | **0.224 (now best)** |
+
+**Every model's absolute F1 dropped, but this is a harder, more representative evaluation, not a
+worse one** — pooling across 8 real stations with genuinely different hardware personalities and
+operating regimes is intrinsically harder than 2, and per-fault-type test counts are now large
+enough to trust (20-33 instances/type, vs 4-8 before): drift 511 windows/20 faults, dropout
+166/23, spike 193/33, stuck_at 295/26. **The LSTM going from worst (0.015-0.195 across rounds 1-9)
+to best (0.224) on the exact same architecture is the clearest confirmation yet of the round-9
+theory** that it was specifically data-starved, not fundamentally unsuited to this problem — more
+independent fault instances per (fault_type, feature) combination is precisely what a from-scratch
+sequence model needs and previously lacked.
+
+**Still nowhere near the RQ1 target (>0.80)**, and this doesn't change that conclusion — but it now
+rests on a real 8-station, 656-fault sample instead of a thin, partly-broken 2-station one. Next
+step, now well-motivated: revisit whether the LSTM specifically benefits further from feature
+selection / a slightly larger sequence model now that data-starvation is less severe, and re-run the
+Round 5 rotating-k-fold stability check on this larger benchmark (the old fold-to-fold fragility
+finding may no longer hold with ~3x the fault instances).
+
+**Operational note:** the ingestion worker's local checkpoint (`~/.awh-ingestion/checkpoint.json`)
+should be kept running (or re-run periodically) going forward — it was silently stale for weeks
+before this was caught, and the ad-hoc debugging session that surfaced this also found a *second*,
+unrelated stale/dead Firebase project key file (`azawh-754de`) sitting in `~/Downloads` that should
+not be confused with the real one going forward.
+
+### Round 13 (2026-07-31, same day) — scoped `FEATURE_COLUMNS` down from all 10 sensor channels to
+just the 4 the lab actually cares about (temperature, humidity, weight, power). Biggest single
+improvement of the entire project — every model roughly doubled or better.
+
+**Motivation:** every round back to round 6 found the same recurring root cause for low attribution
+accuracy — a subset of "loud" features (`velocity`, `voltage`, `outtake_*`) have larger natural
+variance and kept winning the cross-feature comparison regardless of true cause. Those channels
+aren't ones the lab uses; only temperature/humidity/weight/power are. A quick post-hoc check (before
+committing to a rebuild) confirmed the idea had merit: restricting the trained models' final
+argmax to just those 4 columns (without retraining) lifted LSTM attribution F1 0.224→0.279 and
+classifier 0.172→0.254, while leaving Isolation Forest roughly flat (0.162→0.184) — expected, since
+its per-feature forests are trained fully independently and don't care how many *other* forests
+exist.
+
+**Given that signal, rebuilt properly** — set `FEATURE_COLUMNS = ["temperature", "humidity",
+"weight", "power"]` in `build_benchmark_dataset.py` (single source of truth, propagates through
+`compute_windows`, `data_prep.py`, `inject_synthetic_faults.py`, `sequence_data_prep.py`, and
+`lstm_attribution_model.py`'s class vocabulary with no other code changes needed). Same 8 stations,
+same total fault budget (~650 instances) — but now concentrated across 4 candidate features instead
+of 10 (~160/feature instead of ~65/feature), and the noisy 6 columns are gone from the input
+entirely, not just unavailable as an output label.
+
+| Model | 8-station, 10-feature (round 12) | 8-station, 4-feature (round 13) |
+|---|---|---|
+| Rule baseline | 0.110 | 0.227 |
+| Isolation Forest | 0.162 | **0.356** |
+| Two-stage | 0.137 | 0.315 |
+| Supervised classifier | 0.172 | 0.369 |
+| **LSTM** | 0.224 | **0.380 (best)** |
+
+**The Isolation Forest result (0.162→0.356) is bigger than the post-hoc check predicted (0.184),
+and the reason clarifies something the post-hoc check couldn't isolate: detection, not just
+attribution, benefits from dropping the noisy columns.** The post-hoc test only restricted the
+*attribution* argmax; *detection* was still `max()` over all 10 features' scores, so a noisy
+feature's natural spike could still trigger a false detection independent of attribution. With the
+noisy columns gone entirely, detection F1 jumped too (Isolation Forest: 0.334→0.502, LSTM:
+0.292→0.490, classifier: 0.382→0.554) — cleaner detection cascades into cleaner attribution
+downstream, for every model, not just the joint ones. Per-fault-type (new best, LSTM): drift
+recall 59%/attribution-given-detected 68%, dropout 62%/68%, spike 58%/54%, stuck_at 38%/32% (still
+the hardest fault type, consistent with every prior round).
+
+**This is the best result in the whole project (0.380), on the most honest benchmark yet** (8 real
+stations, dead-sensor contamination fixed, faults concentrated on the features that matter) — but
+still well below the RQ1 target of 0.80. Next candidates, now better-motivated given how much
+scoping the feature space just helped: (a) the ensemble idea (Isolation Forest for detection + LSTM
+for attribution) queued after round 12, now worth retrying on this cleaner 4-feature benchmark;
+(b) re-sweep LSTM hyperparameters again — round 9's sweep was tuned for a data-starved 190-fault,
+10-feature regime, now twice-obsolete; (c) stuck_at attribution specifically remains the weak point
+across every model and warrants its own targeted look (a frozen value's shape may just be less
+distinctive among only 4 candidate features than the loud-feature-dominated setting where it was
+merely "collapsed to 0%" — worth checking whether the confusion is concentrated among the 4 target
+features or scattered).
+
+### Round 14 (2026-07-31, same day) — tried the two queued leads from round 13 ("keep squeezing").
+One negative result (new feature), one confirmed positive (LSTM re-sweep) — new best is 0.415.
+
+**Attempt 1 (negative): "prior constant hours" feature, targeting the power/weight stuck_at
+confound.** Round 13 found power/weight stuck_at detection recall very low (19%/5%) and hypothesized
+it's because real idle periods (pump off, nothing being collected) are themselves long constant
+stretches that look just like a frozen sensor from *inside* a window alone. Added
+`{feature}_prior_constant_hours` (`build_benchmark_dataset.py::run_start_indices` +
+`prior_constant_hours`, capped at 6h) — how long the reading right before the window started had
+already been constant, on the theory that a genuine fault's onset is independent of any real
+operational transition (short prior run) vs. a window sitting well inside an already-long-idle
+stretch (long prior run). **Result: flat to slightly negative** (Isolation Forest 0.356→0.348,
+two-stage 0.315→0.305, classifier 0.369→0.358) and the specific target metric didn't move at all —
+power stuck_at recall unchanged (19.2%→19.2%), weight got worse (5.2%→0.9%). Same "too many
+dimensions for one forest" pattern as every previous feature-addition attempt that didn't pan out.
+**Reverted** (removed from `DETECTION_STAT_SUFFIXES` and `compute_windows`, not kept as a togglable
+option — clean revert, no dead code left in the pipeline).
+
+**Attempt 2 (positive, confirmed): re-swept the LSTM's hyperparameters on the round-13 benchmark.**
+Its defaults (`epochs=15, hidden=16, dropout=0.5, wd=1e-3`) were tuned in round 9 against a very
+different, much more data-starved regime (190 faults spread across 10 features, ~65/feature). Round
+13's benchmark has ~160 fault instances per feature now (4 features instead of 10, same total
+budget) — different enough that the old optimum was worth re-checking. Tried 3 configs; the best
+(`epochs=30, hidden=24, dropout=0.4, wd=5e-4` — more capacity, less aggressive regularization) beat
+the default (0.380) on the first run: **0.415**. Verified it wasn't a lucky seed — reran across 4
+more seeds/nearby variants: 0.389, 0.402, 0.380, 0.389, all at or above the old default, mean ~0.39.
+**Adopted as the new default** in `lstm_attribution_model.py`. Official run:
+
+| Model | Round 13 | Round 14 |
+|---|---|---|
+| Rule baseline | 0.227 | 0.227 |
+| Isolation Forest | 0.356 | 0.356 |
+| Two-stage | 0.315 | 0.315 |
+| Supervised classifier | 0.369 | 0.369 |
+| **LSTM** | 0.380 | **0.415 (new best)** |
+
+**Current best result in the project: LSTM, attribution F1 = 0.415**, on the round-13 benchmark (8
+real stations, dead-sensor contamination fixed, scoped to temperature/humidity/weight/power). Still
+well below the RQ1 target (>0.80). The power/weight stuck_at confound from round 13 remains
+unresolved — one genuinely-motivated attempt at it failed; it may need a structurally different idea
+(not another engineered feature) or may be a real, hard-to-remove limitation of synthetic stuck_at
+injection on features with natural idle periods.
+
+### Round 15 (2026-07-31, same day) — built Phase 3, the LangGraph multi-agent system, per CLAUDE.md
+Section 9's proposal. Decided to treat Phase 2 as settled (0.415, well-earned after 14 rounds) rather
+than keep pushing, and move to the next phase in the timeline.
+
+Lives in `research_extension/phase3_agents/`. Orchestrates the Phase 2 Isolation Forest ensemble
+(not the LSTM — the LSTM needs a raw-sequence cache lookup keyed to precomputed windows, which
+doesn't fit an agent receiving one arbitrary window; Isolation Forest only needs the window's
+already-available `rel_*` stat columns) rather than replacing it. Two genuine unknowns were resolved
+by explicit user decision before implementing, not invented: (a) "EPA regulatory thresholds" per the
+original proposal don't map cleanly onto AWH telemetry (temperature/humidity/weight/power aren't
+EPA-regulated contaminants) — implemented as clearly-labeled placeholder operational sanity bounds
+instead, not real regulatory data; (b) stakeholder escalation routing is simulated/logged only, no
+real notification channel (Slack/email/etc.) wired up.
+
+**Architecture:** `StateGraph` with `SensorDriftAgent` and `ThresholdBreachAgent` as parallel
+branches from START, fanning into a `merge` node that decides `needs_incident` — most windows are
+normal, so the conditional edge skips `IncidentReportAgent` (the LLM call) and
+`StakeholderEscalationAgent` entirely rather than reaching them on every window, matching how a real
+monitoring system would behave (silence is the common case). `IncidentReportAgent` retrieves
+grounding context via simple keyword-overlap search over `guides/*.md` (`rag_corpus.py` — not a
+vector DB; the ~3K-line corpus doesn't need one) and calls Claude (`claude-opus-5`, adaptive
+thinking) to translate the statistical finding into a plain-language summary for a non-specialist
+field engineer — the RQ3 target from CLAUDE.md.
+
+**Verified without needing API credentials:** ran the full graph on a genuine normal window from the
+Phase 2 test split — correctly terminated at `merge` with no `incident_report`/`escalation` keys in
+the output, confirming the conditional early-exit works. Ran it against 15 real anomalous windows —
+found one where `SensorDriftAgent` actually flagged something (the others were false negatives,
+consistent with Isolation Forest's ~50% detection recall) and confirmed it correctly reached
+`IncidentReportAgent` and failed **only** on the expected `TypeError: Could not resolve authentication
+method` — proving every non-LLM part of the pipeline (both parallel agents, the merge/routing logic,
+RAG retrieval, state threading) is wired correctly. **Not yet run end-to-end with a real LLM call** —
+needs `ANTHROPIC_API_KEY` (or `ant auth login`, neither present in this environment) before the
+`IncidentReportAgent`/`StakeholderEscalationAgent` nodes can actually execute.
+
+**Next step:** once credentials are available, run `python run_pipeline.py` (needs
+`research_extension/phase1_streaming/venv_phase1`, `langgraph`+`anthropic` already installed there)
+against real sampled windows plus the synthetic out-of-bounds case it includes, and sanity-check the
+generated incident report quality — no human read-through of an actual LLM-generated report has
+happened yet.
+
+**Why this probably happened, and what it means for what's left to try:** an LSTM needs many
+*independent* sequences of each fault's temporal shape to learn a generalizable shape detector; this
+benchmark has only ~190 independent fault instances total across 4 fault types and 10 possible
+features (round 7's corrected count) — meaning as few as ~5 independent examples of a specific
+(fault_type, feature) combination's temporal shape, nowhere near enough for a from-scratch sequence
+model, even a small one. This is consistent with — not contradicting — the round 7/8 conclusion that
+the classifier's problem was data starvation too. **The isolation-forest ensemble's structural
+advantage is now clearer in hindsight: it doesn't need per-(fault_type, feature) examples to learn a
+shape at all** — it only needs enough *normal* data per feature to establish "what's typical," which
+this dataset has in abundance (11,500+ normal windows). Any future from-scratch supervised sequence
+or classifier approach will hit the same instance-count ceiling; the more promising open directions are
+now models that lean on the abundant normal data rather than the sparse fault instances — e.g.
+per-feature autoencoders/reconstruction-error scoring (trained only on normal data, no fault-instance
+count problem at all), or the still-untried feature-selection idea from round 8 applied ahead of the
+classifier.

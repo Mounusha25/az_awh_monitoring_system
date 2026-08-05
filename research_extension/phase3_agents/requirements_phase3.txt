@@ -1,0 +1,9 @@
+# Phase 3 — LangGraph Multi-Agent Orchestration
+# Install: pip install -r requirements_phase3.txt
+# (Reuses research_extension/phase1_streaming/venv_phase1 — no separate venv needed.)
+
+langgraph==1.2.10
+anthropic==0.120.2
+
+# Reuses phase2_models' own dependencies (pandas, joblib, scikit-learn,
+# psycopg2-binary) — already installed in venv_phase1 from requirements_phase2.txt.

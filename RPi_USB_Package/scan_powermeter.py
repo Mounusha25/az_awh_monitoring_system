@@ -1,7 +1,5 @@
 #!/usr/bin/env python3
 """
-scan_powermeter.py
-==================
 Brute-force scanner for the DAE DEM730P (or any Modbus RTU power meter).
 
 Run this when you don't know the meter's address or baud rate:
@@ -22,8 +20,6 @@ Usage with a specific port:
 import sys
 import os
 import glob
-import time
-import struct
 
 
 # ── minimalmodbus import with friendly error ──────────────────────────────────
@@ -127,7 +123,7 @@ def scan(ports):
     print("=" * 60)
     print(f"SCANNING  ({total} combinations — est. {est_minutes} min)")
     print(f"Baud rates: {baud_rates_to_try}  {'(fast mode — 2400 only)' if FAST_MODE else ''}")
-    print(f"Addresses: 1-254")
+    print("Addresses: 1-254")
     print("=" * 60)
 
     baud_rates_to_try = [9600] if FAST_MODE else BAUD_RATES

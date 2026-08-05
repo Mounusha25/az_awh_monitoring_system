@@ -1,4 +1,3 @@
-# read_flow.py (gpiozero version) for SMWF-0420A
 import time
 import threading
 from gpiozero import Button
@@ -24,8 +23,8 @@ def _free_gpio_pin(pin):
 
 class FlowMeterReader:
     """
-    Reads pulse-output flow meter using gpiozero Button.
-    SMWF-0420A spec:
+    Reads a pulse-output flow meter using gpiozero Button.
+    SMWF-0420A spec (gpiozero version):
         - K ≈ 2800 pulses/L
         - Flow (L/min) = pulses_per_sec / 46.7
         - Volume (L)   = total_pulses / 2800
@@ -66,13 +65,8 @@ class FlowMeterReader:
             pulses = current_count - last_count
             last_count = current_count
 
-            # Frequency in Hz
             hz = pulses / self.interval
-
-            # Flow in L/min
             flow_lmin = hz / 46.7
-
-            # Total volume in liters
             total_liters = current_count / 2800.0
 
             if self.callback:

@@ -19,7 +19,9 @@ echo "" && \
 echo "=== Checking Python Packages ===" && \
 python3 -c "import serial; print('✓ pyserial installed')" 2>/dev/null || echo "✗ pyserial missing" && \
 python3 -c "import requests; print('✓ requests installed')" 2>/dev/null || echo "✗ requests missing" && \
-python3 -c "import RPi.GPIO; print('✓ RPi.GPIO installed')" 2>/dev/null || echo "✗ RPi.GPIO missing" && \
+python3 -c "import gpiozero; print('✓ gpiozero installed')" 2>/dev/null || echo "✗ gpiozero missing" && \
+python3 -c "import lgpio; print('✓ lgpio installed')" 2>/dev/null || echo "✗ lgpio missing" && \
+python3 -c "import minimalmodbus; print('✓ minimalmodbus installed')" 2>/dev/null || echo "✗ minimalmodbus missing" && \
 echo "" && \
 echo "=== Checking Internet ===" && \
 ping -c 2 google.com && \
@@ -28,7 +30,7 @@ echo "=== Checking Folder ===" && \
 pwd
 
 # If any package is missing, install:
-pip3 install requests pyserial RPi.GPIO
+pip3 install requests pyserial gpiozero lgpio minimalmodbus
 
 # If serial permission denied, add user to dialout group:
 sudo usermod -a -G dialout $USER
@@ -47,6 +49,13 @@ python3 test_balance.py
 
 python3 test_powermeter.py
 # Expected: Voltage, Current, Power, Energy
+# (older Prolific-based meter — read_power.py)
+
+python3 test_powermeter_new.py
+# Expected: Energy only (DEM730P via RS485 doesn't expose V/A/W)
+# (DEM730P meter — read_power_new.py)
+# If this shows "No communication", run debug_powermeter.py or
+# scan_powermeter.py to diagnose wiring/address/baud issues.
 
 python3 test_flow.py
 # Expected: Flow rate in L/min
@@ -66,8 +75,11 @@ STEP 3: RUN FULL SYSTEM WITH UI
 
 cd ~/RPi_USB_Package
 
-# Run the main program:
+# Run the main program (older Prolific-based power meter):
 python3 AquaPars1.py
+
+# Or, if this station has the DEM730P power meter instead:
+python3 AquaPars1_new_pm.py
 
 # If you get GPIO permission error, use sudo:
 sudo python3 AquaPars1.py

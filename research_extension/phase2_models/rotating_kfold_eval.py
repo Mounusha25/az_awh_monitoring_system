@@ -173,7 +173,7 @@ def main():
     args = parser.parse_args()
 
     stations = [int(s) for s in args.stations.split(",")] if args.stations else INCLUDED_STATIONS
-    windows, all_faults = build_windows(args.seed, args.target_anomaly_frac, stations)
+    windows, all_faults, _ = build_windows(args.seed, args.target_anomaly_frac, stations)
     print(f"\n[RotatingKFold] {len(windows):,} total windows, {len(all_faults):,} total fault instances, "
           f"k={args.k}, warmup_frac={args.warmup_frac}")
 

@@ -1,4 +1,3 @@
-# test_power.py
 import time
 from read_power import PowerMeterReader
 

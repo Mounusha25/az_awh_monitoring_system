@@ -1,13 +1,16 @@
-# read_power_new.py — DAE DEM730P via RS485 Modbus RTU
-# Official DAE register map: only Total Energy available via RS485
-# Reference: DEM Modbus Reference Basic 1.4e (daecontrol.com)
-# Hardware: USB-RS485 adapter → Pi /dev/ttyUSBx
-# Install: pip3 install minimalmodbus
-#
-# DEM730P defaults (from installation guide):
-#   Baud rate : 9600  (confirmed from manual for this unit)
-#   Address   : last 2 digits of serial number (e.g. serial ending 01 → address 1)
-#   Baud options: 1200, 2400, 4800, 9600
+"""
+DAE DEM730P power meter driver via RS485 Modbus RTU.
+
+Official DAE register map only exposes Total Energy via RS485.
+Reference: DEM Modbus Reference Basic 1.4e (daecontrol.com)
+Hardware: USB-RS485 adapter -> Pi /dev/ttyUSBx
+Install: pip3 install minimalmodbus
+
+DEM730P defaults (from installation guide):
+  Baud rate : 9600  (confirmed from manual for this unit)
+  Address   : last 2 digits of serial number (e.g. serial ending 01 -> address 1)
+  Baud options: 1200, 2400, 4800, 9600
+"""
 
 import minimalmodbus
 import time
@@ -56,11 +59,11 @@ class PowerMeterReader:
 
         Args:
             port: Serial port (default: auto-detected FTDI adapter via /dev/serial/by-id)
-            baudrate: Baud rate (default: 2400 — DEM730P factory default per installation guide)
-            address: Modbus address (default: 99 — confirmed from meter LCD)
+            baudrate: Baud rate (default: 9600 — confirmed from manual for this unit)
+            address: Modbus address (default: 1 — last 2 digits of this meter's serial number)
             interval: Poll interval in seconds (default: 10)
             callback: Function to call with (voltage, current, power, energy)
-                      DEM730P via RS485 only exposes energy → (None, None, None, energy_kwh)
+                      DEM730P via RS485 only exposes energy -> (None, None, None, energy_kwh)
             timeout: Serial timeout in seconds (default: 2)
         """
         self.port = port or PORT or find_power_meter_port()
@@ -114,7 +117,7 @@ class PowerMeterReader:
         """Initialize the RS485 connection to the DEM730P meter."""
         try:
             inst = minimalmodbus.Instrument(self.port, self.address)
-            inst.serial.baudrate = self.baudrate  # 2400 default for DEM730P
+            inst.serial.baudrate = self.baudrate
             inst.serial.bytesize = 8
             inst.serial.parity   = 'N'
             inst.serial.stopbits = 1

@@ -83,15 +83,26 @@ def inject_faults(
     rng: np.random.Generator,
     n_faults: int,
     time_col: str = "time",
+    dead_periods: list[dict] | None = None,
 ) -> tuple[pd.DataFrame, list[dict]]:
     """
     Inject `n_faults` randomly-placed, randomly-typed faults into `df`
     (one station's raw readings, sorted by `time_col`), one feature column
     per fault. Returns the perturbed dataframe and an audit log of every
     injected fault (station_id, start, end, parameter, fault_type, magnitude).
+
+    `dead_periods` (see build_benchmark_dataset.py::detect_dead_periods) are
+    real, undocumented stretches where a feature's sensor is frozen/dead —
+    found 2026-07-29, PENDING_TASKS.md Round 10. Injecting a synthetic fault
+    on top of an already-dead feature is undetectable by construction
+    (compute_windows's rolling baseline has zero variance there, so the
+    relative-stat columns collapse to a fixed fallback regardless of the
+    fault's magnitude) — placement avoids these exactly like it avoids
+    overlapping with another already-placed synthetic fault.
     """
     out = df.sort_values(time_col).reset_index(drop=True).copy()
     fault_log: list[dict] = []
+    dead_periods = dead_periods or []
 
     n_rows = len(out)
     if n_rows < 10:
@@ -107,6 +118,7 @@ def inject_faults(
         fault_type = rng.choice(FAULT_TYPES)
         column = rng.choice(feature_columns)
         col_series = out[column]
+        column_dead_periods = [d for d in dead_periods if d["parameter"] == column]
 
         valid = col_series.notna()
         if valid.sum() < 5:
@@ -124,7 +136,11 @@ def inject_faults(
                 candidate_start < placed_end and placed_start < candidate_end
                 for placed_start, placed_end in placed_intervals
             )
-            if overlaps:
+            overlaps_dead = any(
+                candidate_start < d["end"] and d["start"] < candidate_end
+                for d in column_dead_periods
+            )
+            if overlaps or overlaps_dead:
                 continue
 
             candidate_mask = (out[time_col] >= candidate_start) & (out[time_col] < candidate_end)

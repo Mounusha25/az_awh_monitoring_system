@@ -1,7 +1,5 @@
 #!/usr/bin/env python3
 """
-debug_powermeter.py
-====================
 Low-level diagnostic for DEM730P RS485 communication.
 Shows every raw byte sent and received so you can see exactly what's happening.
 

@@ -1,6 +1,3 @@
-# outtake_anemometer.py
-# Safe version with timeout (prevents Tkinter UI from freezing)
-
 import os
 import serial
 import time
@@ -37,9 +34,10 @@ def find_outtake_port():
 
 def outtake_anemometer(serial_port: str = None, baud_rate: int = 9600, timeout: int = 2):
     """
-    Read one packet from outtake anemometer and decode
-    humidity (%), temperature (°C), velocity, and unit.
-    If timeout expires, return (None, None, None, "m/s").
+    Read one packet from the outtake anemometer and decode humidity (%),
+    temperature (°C), velocity, and unit. Returns (None, None, None, "m/s")
+    on timeout instead of raising, so a disconnected sensor doesn't freeze
+    the Tkinter UI thread that calls this.
     """
     if serial_port is None:
         serial_port = find_outtake_port()

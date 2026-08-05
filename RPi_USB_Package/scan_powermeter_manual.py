@@ -1,7 +1,5 @@
 #!/usr/bin/env python3
 """
-scan_powermeter_manual.py
-==========================
 Address/baud sweep for a Modbus RTU power meter — no minimalmodbus required.
 Uses the same manual pyserial + CRC16 approach as read_power.py / debug_powermeter.py.
 

@@ -1,4 +1,3 @@
-# intake_anemometer.py
 import os
 import serial
 import time
@@ -35,7 +34,7 @@ def find_intake_port():
 
 
 def intake_anemometer(serial_port: str = None, baud_rate: int = 9600, timeout: int = 2):
-    """อ่าน 1 packet จาก intake anemometer และ decode ค่า (humidity, temperature, velocity, unit)."""
+    """Read one packet from the intake anemometer and decode humidity, temperature, velocity, and unit."""
     if serial_port is None:
         serial_port = find_intake_port()
     if not os.path.exists(serial_port):

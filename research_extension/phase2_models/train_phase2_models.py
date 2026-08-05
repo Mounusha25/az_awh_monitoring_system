@@ -1,14 +1,15 @@
 """
 AWH Phase 2 — Train and Evaluate Anomaly Attribution Models
 
-Fits the rule-based baseline and the per-feature Isolation Forest ensemble
+Fits the rule-based baseline, the per-feature Isolation Forest ensemble, the
+two-stage model, the supervised classifier, and the LSTM attribution model
 on the benchmark dataset, tunes each model's detection threshold on the
-validation split, evaluates both on the held-out test split, and reports
-results against the proposal's RQ1 targets (attribution F1 > 0.80,
+validation split, evaluates all of them on the held-out test split, and
+reports results against the proposal's RQ1 targets (attribution F1 > 0.80,
 rule-based baseline F1 < 0.65).
 
-LSTM temporal model is not included here — deferred per the sparse-station
-data limitation (see plan notes / CLAUDE.md PENDING_TASKS).
+LSTM needs research_extension/phase2_models/data/sequence_cache.npz — run
+build_sequence_cache.py once before this script if that file doesn't exist.
 
 Usage:
   python train_phase2_models.py
@@ -26,6 +27,7 @@ import pandas as pd
 from build_benchmark_dataset import DATA_DIR, TRACKING_URI
 from evaluate import evaluate_model, tune_threshold
 from isolation_forest_model import IsolationForestEnsemble
+from lstm_attribution_model import LSTMAttributionModel
 from rule_baseline import RuleBasedBaseline
 from supervised_classifier import SupervisedAttributionModel
 from two_stage_model import TwoStageModel
@@ -121,6 +123,20 @@ def main():
             {"n_estimators": classifier.n_estimators})
     results["supervised_classifier"] = classifier_metrics
 
+    # --- LSTM: raw per-timestep sequences instead of windowed summary stats ---
+    # Needs research_extension/phase2_models/data/sequence_cache.npz — run
+    # build_sequence_cache.py first if it isn't there yet.
+    lstm = LSTMAttributionModel().fit(train_df)
+    best_thresh, val_f1 = tune_threshold(lstm, val_df, CLASSIFIER_THRESHOLD_CANDIDATES)
+    lstm_metrics = evaluate_model(lstm, test_df)
+    print(f"[Phase2] LSTM attribution model — threshold={best_thresh:.2f} (val F1={val_f1:.3f}) "
+          f"test_detection_f1={lstm_metrics['detection_f1']:.3f} "
+          f"test_attribution_f1={lstm_metrics['attribution_f1']:.3f}")
+    joblib.dump(lstm, os.path.join(MODELS_DIR, "lstm_attribution_model.joblib"))
+    log_run("phase2-lstm-attribution", "bilstm_raw_sequence", best_thresh, lstm_metrics,
+             {"hidden_size": lstm.hidden_size, "epochs": lstm.epochs})
+    results["lstm"] = lstm_metrics
+
     # --- Comparison against RQ1 targets ---
     print("\n[Phase2] RQ1 comparison:")
     print(f"  Target attribution F1:            > {RQ1_TARGET_F1}")
@@ -129,6 +145,7 @@ def main():
     print(f"  Isolation Forest attribution F1:     {results['isolation_forest']['attribution_f1']:.3f}")
     print(f"  Two-stage attribution F1:            {results['two_stage']['attribution_f1']:.3f}")
     print(f"  Supervised classifier attribution F1: {results['supervised_classifier']['attribution_f1']:.3f}")
+    print(f"  LSTM attribution F1:                  {results['lstm']['attribution_f1']:.3f}")
 
     # --- Spot check: does the supervised classifier pick the right causal parameter? ---
     print("\n[Phase2] Spot check (supervised classifier attribution on true anomalies):")

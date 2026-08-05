@@ -1,8 +1,6 @@
 import tkinter as tk
 from tkinter import ttk
 from datetime import datetime
-import threading
-import requests
 
 
 class AWHControlPanel(tk.Tk):
@@ -19,24 +17,18 @@ class AWHControlPanel(tk.Tk):
 
         self._build_layout()
 
-        # UI state flags
         self._is_validated = False
         self._is_running = False
-
-        # Initialize button states
         self._update_button_states()
-
-
 
     def _update_button_states(self):
         """Enable/disable buttons based on UI state."""
         if self._is_running:
-            # When running: only Stop is enabled
+            # Only Stop is enabled while running
             self.validate_btn.config(state="disabled")
             self.start_btn.config(state="disabled")
             self.stop_btn.config(state="normal")
         else:
-            # When not running: enable Validate and Start (if validated)
             self.validate_btn.config(state="normal")
             self.stop_btn.config(state="disabled")
             self.start_btn.config(
@@ -70,7 +62,6 @@ class AWHControlPanel(tk.Tk):
 
         self._is_running = True
 
-        # Update UI state
         self.system_status_label.config(
             text="RUNNING 🟢",
             foreground="green"
@@ -80,7 +71,6 @@ class AWHControlPanel(tk.Tk):
         self.csv_status_label.config(text="CSV Logging: Active")
         self.cloud_status_label.config(text="Cloud Upload: Active")
 
-        # Disable all config inputs
         self.sensor_interval.config(state="disabled")
         self.file_interval.config(state="disabled")
         self.weight_threshold.config(state="disabled")
@@ -95,7 +85,6 @@ class AWHControlPanel(tk.Tk):
 
         self._is_running = False
 
-        # Update UI state
         self.system_status_label.config(
             text="STOPPED 🔴",
             foreground="red"
@@ -105,7 +94,6 @@ class AWHControlPanel(tk.Tk):
         self.csv_status_label.config(text="CSV Logging: Inactive")
         self.cloud_status_label.config(text="Cloud Upload: N/A")
 
-        # Re-enable config inputs
         self.sensor_interval.config(state="readonly")
         self.file_interval.config(state="readonly")
         self.weight_threshold.config(state="readonly")
@@ -199,8 +187,6 @@ class AWHControlPanel(tk.Tk):
             text=datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         )
         self.time_label.pack(anchor="e")
-
-
 
     def _build_configuration(self):
         """Build configuration section (Step 1)."""

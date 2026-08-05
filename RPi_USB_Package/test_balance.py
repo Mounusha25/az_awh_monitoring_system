@@ -1,4 +1,3 @@
-# test_balance.py
 import time
 from read_balance import BalanceSerialReader, parse_balance_line
 

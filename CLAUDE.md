@@ -123,8 +123,6 @@ az_awh_monitoring_system/
 │   ├── read_power_new.py              ← DEM730P power meter via RS485 Modbus RTU (auto-detects FTDI by-id)
 │   ├── pump_controller.py             ← Pump on/off control
 │   ├── RASPBERRY_PI_COMMANDS.txt      ← Pi-specific setup and operational commands
-│   ├── sim_run_on_mac.py              ← Simulates full station run without hardware
-│   ├── test_on_mac.py                 ← Unit tests runnable on Mac without Pi
 │   ├── test_balance.py                ← Individual sensor test script
 │   ├── test_flow.py                   ← Individual sensor test script
 │   ├── test_pump.py                   ← Individual sensor test script
@@ -133,7 +131,8 @@ az_awh_monitoring_system/
 │   ├── test_intake_anememoter.py      ← Tests intake_anemometer.py (filename typo, kept as-is on purpose)
 │   ├── test_outtaketake_anememoter.py ← Tests outtake_anemometer.py (filename typo, kept as-is on purpose)
 │   ├── debug_powermeter.py            ← Raw Modbus byte-level diagnostic for DEM730P
-│   └── scan_powermeter.py             ← Modbus address discovery for DEM730P
+│   ├── scan_powermeter.py             ← Modbus address/baud discovery for DEM730P (minimalmodbus)
+│   └── scan_powermeter_manual.py      ← Same address/baud sweep, no minimalmodbus dependency
 │
 └── guides/                            ← Human-readable documentation hub
     ├── ARCHITECTURE.md
@@ -287,8 +286,8 @@ Each AWH station runs a Raspberry Pi with `RPi_USB_Package/`. USB port assignmen
 
 ## 9. Research Extension Tech Stack (Summer 2026 — In Development)
 
-Phase 1 is built and has been run at least once; Phases 2–5 are NOT yet in the
-codebase and remain the next phases per the research proposal.
+Phases 1–3 are built and have been run at least once; Phases 4–5 are NOT yet in
+the codebase and remain the next phases per the research proposal.
 
 ### Phase 1 (Weeks 1–2) — Streaming Foundation ✅ Built
 Lives in `research_extension/phase1_streaming/`:
@@ -308,19 +307,31 @@ Lives in `research_extension/phase1_streaming/`:
   (30-min sliding window, 5-min step) → writes to `windowed_features` table
 - **MLflow** — experiment tracking setup
 
-### Phase 2 (Weeks 3–4) — Anomaly Detection Models
-- **PyTorch / TensorFlow** — LSTM temporal anomaly model
-- **scikit-learn** — Isolation Forest ensemble scorer
-- **MLflow** — champion/challenger model registry
-- Target: F1 > 0.80 on held-out test set (rule-based baseline: F1 < 0.65)
+### Phase 2 (Weeks 3–4) — Anomaly Detection Models ✅ Built
+Lives in `research_extension/phase2_models/`. 14 rounds of iteration are logged
+in `PENDING_TASKS.md` Part C — highlights: a real data-pipeline bug (dead/frozen
+sensors silently contaminating the "clean" baseline, fixed round 10–11), an
+8x real-station expansion after finding the local Postgres mirror was stale
+(round 12), and scoping the benchmark down to the 4 features the lab actually
+uses (round 13), which roughly doubled every model's score.
+- **PyTorch** — LSTM temporal anomaly/attribution model (`lstm_attribution_model.py`) — current best, attribution F1 = 0.415
+- **scikit-learn** — Isolation Forest ensemble (`isolation_forest_model.py`), supervised RandomForest classifier, two-stage model, rule baseline
+- **MLflow** — experiment tracking (`AWH-AnomalyDetection`, same tracking DB as Phase 1)
+- Target: F1 > 0.80 on held-out test set (rule-based baseline: F1 < 0.65) — **not yet reached**; 0.415 is the current honest ceiling after 14 rounds across 5 model families. See [[research_phase2_attribution_status]] memory / PENDING_TASKS.md for the full history before attempting further model changes.
 
-### Phase 3 (Weeks 4–5) — Multi-Agent Orchestration
-- **LangGraph** — multi-agent system orchestration
+### Phase 3 (Weeks 4–5) — Multi-Agent Orchestration ✅ Built
+Lives in `research_extension/phase3_agents/`. Orchestrates the Phase 2 models
+(Isolation Forest ensemble) rather than replacing them — `run_pipeline.py` is
+the demo entry point.
+- **LangGraph** — `StateGraph` with parallel fan-out/fan-in + conditional
+  early-exit (most windows are normal — the graph skips the LLM call
+  entirely rather than reaching the incident/escalation nodes)
 - **Agents:**
-  - `SensorDriftAgent` — monitors parameter distributions for drift signals
-  - `ThresholdBreachAgent` — evaluates readings against EPA regulatory thresholds
-  - `IncidentReportAgent` — RAG-grounded LLM generating natural language summaries
-  - `StakeholderEscalationAgent` — routes alerts to appropriate responders
+  - `SensorDriftAgent` — wraps the saved Isolation Forest ensemble to flag anomalous windows and attribute a likely cause
+  - `ThresholdBreachAgent` — checks raw readings against **placeholder operational sanity bounds**, not real EPA data (AWH telemetry doesn't map to standard EPA drinking-water limits — explicit decision 2026-07-31; swap in real values if this needs to answer to an actual regulatory framework)
+  - `IncidentReportAgent` — RAG-grounded Claude (`claude-opus-5`) call; retrieval is keyword overlap over `guides/*.md` (not a vector DB — the corpus is ~3K lines, keyword ranking is sufficient)
+  - `StakeholderEscalationAgent` — decides severity + routing and **logs the decision only** — no real notification channel wired up (explicit decision 2026-07-31)
+- Requires `ANTHROPIC_API_KEY` (or `ant auth login`) to actually run the `IncidentReportAgent` LLM call — every other node runs with no external credentials.
 
 ### Phase 4 (Weeks 6–7) — Drift-Adaptive MLOps
 - **Evidently AI** — data drift and model performance monitoring
@@ -352,9 +363,9 @@ Lives in `research_extension/phase1_streaming/`:
 | 70,000+ real sensor records | ✅ Live |
 | Rule-based anomaly baseline (40% false-alert reduction) | ✅ Operational |
 | Kafka + Spark streaming layer (`research_extension/phase1_streaming/`) | ✅ Built (Week 1–2) |
-| Benchmark dataset (labeled, train/val/test split) | 🔲 Week 2 — next up |
-| LSTM + Isolation Forest models | 🔲 Week 3–4 |
-| LangGraph multi-agent system | 🔲 Week 4–5 |
+| Benchmark dataset (labeled, train/val/test split) | ✅ Built — 8 real stations, scoped to temperature/humidity/weight/power (`research_extension/phase2_models/`) |
+| LSTM + Isolation Forest + classifier + two-stage models | ✅ Built — LSTM best, attribution F1=0.415, well below RQ1's 0.80 target (see PENDING_TASKS.md Part C for the full 14-round history) |
+| LangGraph multi-agent system (`research_extension/phase3_agents/`) | ✅ Built — SensorDriftAgent, ThresholdBreachAgent (placeholder thresholds, not real EPA data), IncidentReportAgent (RAG-grounded Claude call), StakeholderEscalationAgent (simulated routing, no real notifications sent). Needs `ANTHROPIC_API_KEY` to actually run the LLM step. |
 | Evidently + Airflow MLOps pipeline | 🔲 Week 6–7 |
 | Kubernetes + Grafana deployment | 🔲 Week 8 |
 

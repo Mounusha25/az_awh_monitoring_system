@@ -19,16 +19,42 @@ not 10 independent models being compared after the fact.
 from __future__ import annotations
 
 import pandas as pd
+from sklearn.calibration import CalibratedClassifierCV
 from sklearn.ensemble import RandomForestClassifier
 
 from data_prep import all_stat_columns, prepare_columns
 
 
 class SupervisedAttributionModel:
-    def __init__(self, threshold: float = 0.3, n_estimators: int = 300, random_state: int = 42):
+    def __init__(
+        self,
+        threshold: float = 0.3,
+        n_estimators: int = 300,
+        random_state: int = 42,
+        calibrate: bool = False,
+        calibration_cv: int = 5,
+    ):
         self.threshold = threshold  # minimum predicted probability to accept a non-"none" label
         self.n_estimators = n_estimators
         self.random_state = random_state
+        # Round 8: tried CalibratedClassifierCV (sigmoid/Platt, cv=5) to address
+        # Round 7's diagnosis that raw predict_proba's best-class value averages
+        # ~0.162 across 11 classes (barely above ~0.091 chance) with the argmax
+        # dominated by 3-4 classes regardless of true cause. Result: WORSE, not
+        # better — test detection F1 0.291->0.171, attribution F1 0.214->0.155,
+        # dropout/spike/stuck_at recall all collapsed to 0.0 (from already-low
+        # 4-7%). Calibration rescales each class's probability monotonically but
+        # doesn't change *which* class wins the argmax for a given sample, and
+        # the underlying problem is the same one diagnosed on the isolation-
+        # forest side (round 6): a handful of "loud" features dominate the score
+        # comparison regardless of true cause. This is the 4th independent
+        # negative result on post-hoc score-adjustment fixes (3 on isolation
+        # forest, now 1 on the classifier) — defaults OFF, kept togglable only
+        # for reproducibility. Do not re-attempt without a genuinely different
+        # idea (e.g. feature selection/dimensionality reduction before the
+        # classifier, not after its scores).
+        self.calibrate = calibrate
+        self.calibration_cv = calibration_cv
         self.columns_ = all_stat_columns()
         self.fill_values_: dict[str, float] = {}
 
@@ -36,7 +62,7 @@ class SupervisedAttributionModel:
         x, fill_values = prepare_columns(train_df, self.columns_)
         self.fill_values_ = fill_values
 
-        self.model_ = RandomForestClassifier(
+        base_model = RandomForestClassifier(
             n_estimators=self.n_estimators,
             random_state=self.random_state,
             class_weight="balanced",
@@ -48,6 +74,12 @@ class SupervisedAttributionModel:
             max_depth=5,
             min_samples_leaf=20,
         )
+        if self.calibrate:
+            self.model_ = CalibratedClassifierCV(
+                base_model, method="sigmoid", cv=self.calibration_cv,
+            )
+        else:
+            self.model_ = base_model
         self.model_.fit(x, train_df["causal_parameter"])
         return self
 
