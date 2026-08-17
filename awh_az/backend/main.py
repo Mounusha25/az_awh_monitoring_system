@@ -2,9 +2,11 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
+from fastapi.concurrency import run_in_threadpool
 from typing import List, Optional
 from datetime import datetime, timezone
 from concurrent.futures import ThreadPoolExecutor
+import asyncio
 import json
 import io
 import csv
@@ -264,6 +266,22 @@ async def get_stations():
     return stations
 
 
+def _fetch_readings_docs(readings_ref, offset: int, limit: int):
+    """Blocking Firestore fetch (cursor-skip + paged read). Runs in a worker
+    thread via run_in_threadpool — up to `limit` (max 10000) docs can be
+    streamed here, and calling .stream() directly from the async route would
+    block the event loop for the whole fetch. Returns None if offset exceeds
+    the total number of documents.
+    """
+    if offset > 0:
+        cursor_docs = list(readings_ref.limit(offset).stream())
+        if len(cursor_docs) == offset:
+            readings_ref = readings_ref.start_after(cursor_docs[-1])
+        else:
+            return None
+    return list(readings_ref.limit(limit).stream())
+
+
 # ---------------------------------------------------------------------------
 # Station readings
 # ---------------------------------------------------------------------------
@@ -309,16 +327,7 @@ async def get_station_readings(
 
     # Cursor-based pagination: skip `offset` docs without downloading them all.
     # For offset=0 (the common case) we go straight to .limit(limit).
-    if offset > 0:
-        # Fetch just the cursor document cheaply, then start after it.
-        cursor_docs = list(readings_ref.limit(offset).stream())
-        if len(cursor_docs) == offset:
-            readings_ref = readings_ref.start_after(cursor_docs[-1])
-        else:
-            # Offset exceeds total — return empty
-            raise HTTPException(status_code=404, detail=f"Station '{station_name}' not found or has no readings")
-
-    docs = list(readings_ref.limit(limit).stream())
+    docs = await run_in_threadpool(_fetch_readings_docs, readings_ref, offset, limit)
 
     if not docs:
         raise HTTPException(status_code=404, detail=f"Station '{station_name}' not found or has no readings")
@@ -367,6 +376,50 @@ async def get_station_readings(
     return response
 
 
+def _fetch_station_export_rows(
+    sname: str,
+    start_date: Optional[datetime],
+    end_date: Optional[datetime],
+    fields: Optional[set],
+) -> list[dict]:
+    """Blocking Firestore fetch for one station's export rows.
+
+    Runs inside run_in_threadpool — the firestore-admin client is synchronous,
+    so calling .stream() directly from an async route would block the single
+    event loop for the entire paginated fetch, stalling every other request
+    the server is handling in the meantime.
+    """
+    export_order = firestore.Query.ASCENDING if start_date else firestore.Query.DESCENDING
+    query = (
+        db.collection(settings.firestore_collection)
+        .document(sname)
+        .collection("readings")
+        .order_by("timestamp", direction=export_order)
+    )
+    if start_date:
+        query = query.where("timestamp", ">=", start_date)
+    if end_date:
+        query = query.where("timestamp", "<=", end_date)
+
+    rows: list[dict] = []
+    # Paginate through all records — a single .limit(max_query_limit) caps at ~7 days
+    # at 1 reading/minute. Loop in batches until Firestore returns a partial page.
+    page_query = query.limit(settings.max_query_limit)
+    while True:
+        batch = list(page_query.stream())
+        if not batch:
+            break
+        for rdoc in batch:
+            data = _firestore_doc_to_dict(rdoc.to_dict())
+            if fields:
+                data = {k: v for k, v in data.items() if k in fields or k in ("station_name", "timestamp")}
+            rows.append(data)
+        if len(batch) < settings.max_query_limit:
+            break
+        page_query = query.start_after(batch[-1]).limit(settings.max_query_limit)
+    return rows
+
+
 # ---------------------------------------------------------------------------
 # Export
 # ---------------------------------------------------------------------------
@@ -376,45 +429,23 @@ async def export_data(request: BulkExportRequest):
     if not db:
         raise HTTPException(status_code=503, detail="Firestore not initialised")
 
-    all_readings: list[dict] = []
-
     # Determine which stations to query
     if request.station_names:
         station_names = request.station_names
     else:
-        station_names = [
-            doc.id
-            for doc in db.collection(settings.firestore_collection).stream()
-        ]
-
-    for sname in station_names:
-        export_order = firestore.Query.ASCENDING if request.start_date else firestore.Query.DESCENDING
-        query = (
-            db.collection(settings.firestore_collection)
-            .document(sname)
-            .collection("readings")
-            .order_by("timestamp", direction=export_order)
+        station_names = await run_in_threadpool(
+            lambda: [doc.id for doc in db.collection(settings.firestore_collection).stream()]
         )
-        if request.start_date:
-            query = query.where("timestamp", ">=", request.start_date)
-        if request.end_date:
-            query = query.where("timestamp", "<=", request.end_date)
 
-        # Paginate through all records — a single .limit(max_query_limit) caps at ~7 days
-        # at 1 reading/minute. Loop in batches until Firestore returns a partial page.
-        page_query = query.limit(settings.max_query_limit)
-        while True:
-            batch = list(page_query.stream())
-            if not batch:
-                break
-            for rdoc in batch:
-                data = _firestore_doc_to_dict(rdoc.to_dict())
-                if request.fields:
-                    data = {k: v for k, v in data.items() if k in request.fields or k in ("station_name", "timestamp")}
-                all_readings.append(data)
-            if len(batch) < settings.max_query_limit:
-                break
-            page_query = query.start_after(batch[-1]).limit(settings.max_query_limit)
+    fields = set(request.fields) if request.fields else None
+
+    # Fetch every station concurrently in worker threads instead of one
+    # sequential blocking pagination loop per station on the event loop.
+    per_station_rows = await asyncio.gather(*[
+        run_in_threadpool(_fetch_station_export_rows, sname, request.start_date, request.end_date, fields)
+        for sname in station_names
+    ])
+    all_readings: list[dict] = [row for rows in per_station_rows for row in rows]
 
     if not all_readings:
         raise HTTPException(status_code=404, detail="No data found matching the criteria")
@@ -484,33 +515,21 @@ def _velocity_to_mps(velocity: float, unit: Optional[str]) -> float:
     return velocity
 
 
-@app.get("/stations/{station_name}/hourly", tags=["Analytics"])
-async def get_hourly_aggregation(
+def _compute_hourly_aggregation_sync(
     station_name: str,
-    start_date: Optional[datetime] = Query(None, description="Start date (ISO format)"),
-    end_date: Optional[datetime] = Query(None, description="End date (ISO format)"),
-):
+    start_date: Optional[datetime],
+    end_date: Optional[datetime],
+) -> Optional[dict]:
+    """Blocking: fetch readings from Firestore and compute hourly aggregates.
+
+    Runs inside run_in_threadpool. Both the paginated Firestore fetch and the
+    per-reading aggregation below are synchronous/CPU-bound; calling this
+    directly from the async route would block the single event loop for the
+    whole computation (which can run over 100k+ readings for wide date
+    ranges), stalling every other request the server is handling.
+
+    Returns None if no readings were found for the range.
     """
-    Compute hourly aggregated statistics for a station.
-
-    Returns per-hour buckets with:
-    - mean & std dev for temperature, humidity, velocity (intake & outtake), power
-    - absolute humidity (intake & outtake) mean & std dev
-    - water_produced_L (delta weight per hour)
-    - energy_consumed_kWh (delta energy per hour)
-    - energy_per_liter (kWh/L)
-    - harvesting_efficiency_pct_hourly (ratio of captured water vs intake-available water over the hour)
-    """
-    if not db:
-        raise HTTPException(status_code=503, detail="Firestore not initialised")
-
-    # Cache hourly aggregations for 10 minutes (they are expensive to compute)
-    hourly_cache_key = f"hourly:{station_name}:{start_date}:{end_date}"
-    cached_hourly = cache.get(hourly_cache_key)
-    if cached_hourly:
-        return cached_hourly
-
-    # Fetch readings
     readings_ref = (
         db.collection(settings.firestore_collection)
         .document(station_name)
@@ -535,7 +554,7 @@ async def get_hourly_aggregation(
         page_query = readings_ref.start_after(batch[-1]).limit(settings.max_query_limit)
 
     if not raw:
-        raise HTTPException(status_code=404, detail=f"No readings found for '{station_name}' in the given range")
+        return None
 
     # Group by hour bucket
     from collections import defaultdict
@@ -688,13 +707,45 @@ async def get_hourly_aggregation(
 
         hourly_rows.append(row)
 
-    result = {
+    return {
         "station_name": station_name,
         "start_date": start_date.isoformat() if start_date else None,
         "end_date": end_date.isoformat() if end_date else None,
         "total_hours": len(hourly_rows),
         "data": hourly_rows,
     }
+
+
+@app.get("/stations/{station_name}/hourly", tags=["Analytics"])
+async def get_hourly_aggregation(
+    station_name: str,
+    start_date: Optional[datetime] = Query(None, description="Start date (ISO format)"),
+    end_date: Optional[datetime] = Query(None, description="End date (ISO format)"),
+):
+    """
+    Compute hourly aggregated statistics for a station.
+
+    Returns per-hour buckets with:
+    - mean & std dev for temperature, humidity, velocity (intake & outtake), power
+    - absolute humidity (intake & outtake) mean & std dev
+    - water_produced_L (delta weight per hour)
+    - energy_consumed_kWh (delta energy per hour)
+    - energy_per_liter (kWh/L)
+    - harvesting_efficiency_pct_hourly (ratio of captured water vs intake-available water over the hour)
+    """
+    if not db:
+        raise HTTPException(status_code=503, detail="Firestore not initialised")
+
+    # Cache hourly aggregations for 10 minutes (they are expensive to compute)
+    hourly_cache_key = f"hourly:{station_name}:{start_date}:{end_date}"
+    cached_hourly = cache.get(hourly_cache_key)
+    if cached_hourly:
+        return cached_hourly
+
+    result = await run_in_threadpool(_compute_hourly_aggregation_sync, station_name, start_date, end_date)
+    if result is None:
+        raise HTTPException(status_code=404, detail=f"No readings found for '{station_name}' in the given range")
+
     cache.set(hourly_cache_key, result, ttl=600)
     return result
 
