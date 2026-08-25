@@ -32,6 +32,7 @@ This index helps you navigate all project documentation and code.
 - **[DEPLOYMENT_GUIDE.md](DEPLOYMENT_GUIDE.md)** - Section 5: Troubleshooting (10+ issues)
 - **[QUICK_REFERENCE.md](QUICK_REFERENCE.md)** - Support checklist
 - **[ARCHITECTURE.md](ARCHITECTURE.md)** - Error handling flowchart
+- **[KNOWN_ISSUES.md](KNOWN_ISSUES.md)** - Open performance/reliability issues and what would fix them
 
 ---
 
