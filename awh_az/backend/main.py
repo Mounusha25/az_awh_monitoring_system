@@ -637,20 +637,34 @@ def _compute_hourly_aggregation_sync(
             row["water_produced_g"] = None
 
         # Energy consumed per hour: sum of positive increments (never subtract), same
-        # pattern as water above — the power meter's cumulative counter occasionally
-        # resets mid-stream (e.g. drops from ~65000 back to ~0), and a plain
-        # last-minus-first delta turns that reset into a large negative reading.
-        # Raw `energy` readings are cumulative Wh from the power meter (see
-        # AquaPars1.py / read_power*.py), so convert to kWh here.
+        # pattern as water above — the power meter's cumulative counter periodically
+        # wraps or resets (e.g. a 16-bit register overflowing at 65535), and a plain
+        # last-minus-first delta turns that into a large negative reading.
+        #
+        # Unit handling: different power-meter driver versions deployed across
+        # stations/time report this field in different units — older/pre-fix
+        # readers upload raw cumulative Wh (values in the thousands+), the current
+        # DEM730P driver (read_power_new.py, fixed 2026-07-14, confirmed against
+        # the meter's own LCD) uploads already-converted kWh (small values, well
+        # under 1000). These stations draw roughly 1-1.5kW, so a genuine hourly
+        # kWh delta should never be more than a few kWh — anything far above that
+        # is almost certainly raw Wh that still needs the /1000 conversion. See
+        # guides/KNOWN_ISSUES.md for the underlying per-station driver mismatch.
+        ENERGY_WH_HEURISTIC_THRESHOLD_KWH = 20
         energies = [(r.get("timestamp", ""), r.get("energy")) for r in readings_in_hour
                      if isinstance(r.get("energy"), (int, float))]
         if len(energies) >= 2:
             energies.sort(key=lambda x: x[0])
-            energy_wh = sum(
+            energy_delta = sum(
                 max(energies[i][1] - energies[i - 1][1], 0)
                 for i in range(1, len(energies))
             )
-            row["energy_consumed_kWh"] = round(energy_wh / 1000.0, 4)
+            energy_kwh = (
+                energy_delta / 1000.0
+                if energy_delta > ENERGY_WH_HEURISTIC_THRESHOLD_KWH
+                else energy_delta
+            )
+            row["energy_consumed_kWh"] = round(energy_kwh, 4)
         else:
             row["energy_consumed_kWh"] = None
 

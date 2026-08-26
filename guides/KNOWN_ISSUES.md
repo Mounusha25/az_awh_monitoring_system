@@ -147,6 +147,53 @@ or as a side effect of doing §1.
 
 ---
 
+## 7. Power-meter `energy` field is inconsistently scaled across stations/time
+
+**What:** found 2026-08-25/26 while fixing negative hourly energy consumption
+(`station_AquaPars@PowerPlant` was reporting values like `-64,341 kWh` for a single
+hour). Two problems, both in `RPi_USB_Package/read_power.py`:
+
+- **16-bit register overflow.** `read_power.py:80` reads the energy register as a
+  single 16-bit word (`response[13:15]`), unlike voltage/current/power just above it,
+  which correctly combine a high+low register pair into 32-bit. This wraps at 65,536
+  raw Wh (~65.5 kWh) — confirmed directly: `station_AquaPars@PowerPlant`'s raw energy
+  reading dropped from `65517` to `1` at 2026-08-25T03:32, with power draw unchanged
+  (~1220W) either side. This isn't a meter reset, it's an integer overflow, and it
+  recurs roughly every 9-10 days at this station's power draw.
+- **Inconsistent units across driver versions.** `read_power.py` uploads raw Wh
+  (comment says so explicitly, `/1000.0` conversion added at some point but the Pi
+  actually running `station_AquaPars@PowerPlant` appears to predate that conversion —
+  live values are Wh-scale, not the small kWh-scale the current script would produce).
+  `read_power_new.py` (DEM730P driver, fixed 2026-07-14, confirmed against the meter's
+  own LCD: raw=8024 → 80.2 kWh) uploads already-converted kWh. Same field name,
+  different units, depending on which station/deploy era produced the reading.
+
+**Current mitigation (`awh_az/backend/main.py`, `/hourly` aggregation):** sums only
+positive per-step deltas (never subtracts, so a wrap/reset contributes 0 instead of a
+huge negative number), and uses a physical-plausibility heuristic — these stations draw
+~1-1.5kW, so a genuine hourly delta over 20 kWh is essentially impossible and gets
+treated as raw Wh needing `/1000`; anything under that is left as-is. This is a
+best-effort guess per hour, not a real fix — it can't distinguish a true unit from a
+station that's uncharacteristically drawing a lot of power for other reasons, and old
+pre-fix data collected under the `read_long()` 32-bit-combine bug (see
+`read_power_new.py` comment, values in the 140,000-150,000 range observed for
+`station_testbed_1@Powerplant` around 2026-07-09/10) remains uncorrected — it's simply
+garbage from before the 2026-07-14 fix and isn't recoverable after the fact.
+
+**Real fix:** two parts, both on the Raspberry Pi side —
+1. Fix `read_power.py` to read energy as a combined 32-bit register (high+low), the
+   same pattern current/power already use, so the counter stops wrapping at ~65.5 kWh.
+2. Standardize which unit every deployed station's power-meter driver uploads (pick
+   one — kWh matches `read_power_new.py`'s already-fixed, LCD-confirmed behavior — and
+   make `read_power.py` match it), then redeploy to every physical station so the
+   backend no longer needs to guess.
+
+**Status:** open. Backend-side mitigation shipped 2026-08-26; root cause is still live
+on at least `station_AquaPars@PowerPlant`'s deployed Pi script until it's redeployed
+with a corrected `read_power.py`.
+
+---
+
 ## Already fixed this session (for reference — not open items)
 
 - Dashboard download buttons failed silently (no error shown on failure) — fixed,
