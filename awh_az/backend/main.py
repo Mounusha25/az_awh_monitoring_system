@@ -636,14 +636,21 @@ def _compute_hourly_aggregation_sync(
         else:
             row["water_produced_g"] = None
 
-        # Energy consumed per hour (delta energy, already stored in kWh by all
-        # station readers — see CLAUDE.md data model)
+        # Energy consumed per hour: sum of positive increments (never subtract), same
+        # pattern as water above — the power meter's cumulative counter occasionally
+        # resets mid-stream (e.g. drops from ~65000 back to ~0), and a plain
+        # last-minus-first delta turns that reset into a large negative reading.
+        # Raw `energy` readings are cumulative Wh from the power meter (see
+        # AquaPars1.py / read_power*.py), so convert to kWh here.
         energies = [(r.get("timestamp", ""), r.get("energy")) for r in readings_in_hour
                      if isinstance(r.get("energy"), (int, float))]
         if len(energies) >= 2:
             energies.sort(key=lambda x: x[0])
-            energy_kwh = energies[-1][1] - energies[0][1]
-            row["energy_consumed_kWh"] = round(energy_kwh, 4)
+            energy_wh = sum(
+                max(energies[i][1] - energies[i - 1][1], 0)
+                for i in range(1, len(energies))
+            )
+            row["energy_consumed_kWh"] = round(energy_wh / 1000.0, 4)
         else:
             row["energy_consumed_kWh"] = None
 
