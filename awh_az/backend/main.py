@@ -623,15 +623,23 @@ def _compute_hourly_aggregation_sync(
             row["abs_humidity_outtake_mean"] = None
             row["abs_humidity_outtake_std"] = None
 
-        # Water produced per hour: sum of positive weight increments (never subtract)
+        # Water produced per hour: sum of positive weight increments (never subtract,
+        # so a pump-triggered drain — legitimate large negative jumps, confirmed by
+        # cross-checking against pump_status — doesn't get subtracted as if it were
+        # negative production). Increments below WEIGHT_NOISE_FLOOR_G are dropped
+        # first: some stations' balance readings jitter ±5-25g between consecutive
+        # readings with no real accumulating trend (confirmed on station_testbed_1 —
+        # net change over 2 days was ~170g but naively summing every positive wobble
+        # gave ~9000g, a ~50x overcount). 15g sits well below the real per-step jumps
+        # seen on a working station (station_AquaPars@PowerPlant's positive deltas are
+        # ~99.7% above this floor) while filtering out most of the noise-only jitter.
+        WEIGHT_NOISE_FLOOR_G = 15
         weights = [(r.get("timestamp", ""), r.get("weight")) for r in readings_in_hour
                     if isinstance(r.get("weight"), (int, float))]
         if len(weights) >= 2:
             weights.sort(key=lambda x: x[0])
-            water_produced = sum(
-                max(weights[i][1] - weights[i - 1][1], 0)
-                for i in range(1, len(weights))
-            )
+            weight_deltas = [weights[i][1] - weights[i - 1][1] for i in range(1, len(weights))]
+            water_produced = sum(d for d in weight_deltas if d >= WEIGHT_NOISE_FLOOR_G)
             row["water_produced_g"] = round(water_produced, 4)
         else:
             row["water_produced_g"] = None
