@@ -122,6 +122,14 @@ FIELD_CATEGORIES = {
 }
 
 
+def _normalize_location_label(raw: str) -> str:
+    """Station names were entered inconsistently ("PowerPlant" vs "Powerplant"),
+    so the same location can render two different ways across stations.
+    Title-casing collapses both to one consistent label without touching the
+    underlying Firestore document names — a display fix only."""
+    return raw.strip().title()
+
+
 def _firestore_doc_to_dict(doc_dict: dict) -> dict:
     """Convert Firestore document dict to JSON-safe dict."""
     out = {}
@@ -814,7 +822,7 @@ async def get_impact():
         data = agg_doc.to_dict()
         station_impacts.append(StationImpact(
             station_name=sdoc.id,
-            location=sdoc.id.split("@", 1)[1].strip() if "@" in sdoc.id else None,
+            location=_normalize_location_label(sdoc.id.split("@", 1)[1]) if "@" in sdoc.id else None,
             total_liters=round(data.get("total_water_g", 0.0) / 1000, 3),
             readings_processed=data.get("readings_processed", 0),
             updated_at=data.get("updated_at"),
@@ -878,7 +886,7 @@ async def get_stations_registry(
 
         return StationRegistryItem(
             station_name=sname,
-            location=sname.split("@", 1)[1].strip() if "@" in sname else None,
+            location=_normalize_location_label(sname.split("@", 1)[1]) if "@" in sname else None,
             status=station_status,
         )
 
@@ -913,7 +921,7 @@ async def create_station(payload: CreateStationRequest):
 
     location = payload.location
     if location is None and "@" in station_name:
-        location = station_name.split("@", 1)[1].strip()
+        location = _normalize_location_label(station_name.split("@", 1)[1])
 
     doc_ref.set({
         "created_at": datetime.now(timezone.utc).isoformat(),

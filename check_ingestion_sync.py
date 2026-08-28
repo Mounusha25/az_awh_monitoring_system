@@ -7,8 +7,20 @@ that point was actually inserted (see the 2026-08-17 desync where checkpoints
 sat at the true Firestore max while ~960K rows were silently missing). This
 compares real counts on both sides instead of trusting the checkpoint file.
 
+Meant to run both interactively (full table, for manual audits) and on a
+schedule (see edu.asu.awh-sync-check.plist alongside it) — a nonzero gap up
+to MISSING_ROW_THRESHOLD is normal poll lag (Postgres is always a few rows
+behind Firestore between ingestion cycles, observed ~4 rows on a live check);
+only a gap above that threshold prints an [ALERT] line, so a scheduled daily
+run doesn't cry wolf on ordinary lag while still catching a real desync like
+the 2026-08-17 incident (~960K rows) automatically instead of by manual audit.
+
 Usage:
     python3 check_ingestion_sync.py
+
+Env vars:
+    DATABASE_URL, FIREBASE_CREDENTIALS_PATH  same as ingestion_worker.py
+    MISSING_ROW_THRESHOLD                    rows of gap before alerting (default 200)
 """
 
 import os
@@ -25,6 +37,7 @@ FIREBASE_CREDENTIALS_PATH = os.getenv(
     "FIREBASE_CREDENTIALS_PATH",
     os.path.join(os.path.dirname(__file__), "awh_az/backend/awh-project-460421-52cd6ebf2aa3.json")
 )
+MISSING_ROW_THRESHOLD = int(os.getenv("MISSING_ROW_THRESHOLD", "200"))
 
 
 def main():
@@ -63,8 +76,11 @@ def main():
     print("-" * 78)
     if total_missing == 0:
         print("All stations fully synced.")
+    elif total_missing <= MISSING_ROW_THRESHOLD:
+        print(f"TOTAL MISSING: {total_missing} rows — within normal poll-lag threshold ({MISSING_ROW_THRESHOLD}), not alerting.")
     else:
-        print(f"TOTAL MISSING: {total_missing} rows across the stations flagged above.")
+        print(f"[ALERT] TOTAL MISSING: {total_missing} rows across the stations flagged above "
+              f"(threshold {MISSING_ROW_THRESHOLD}).")
         print("checkpoint.json alone will not reveal this — see ingestion_checkpoint_desync_recurrence_2026-08-17 memory.")
 
 

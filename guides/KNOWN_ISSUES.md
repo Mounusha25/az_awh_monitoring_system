@@ -105,7 +105,11 @@ mechanism to something self-verifying (e.g. periodically reconcile against a Fir
 count as part of the worker's own loop) so a future desync is caught automatically
 instead of by manual audit.
 
-**Status:** recovered; detection tooling exists but isn't automated yet.
+**Status:** closed (2026-08-28) — `check_ingestion_sync.py` now runs daily via
+`~/Library/LaunchAgents/edu.asu.awh-sync-check.plist` and prints an `[ALERT]` line
+when the gap exceeds `MISSING_ROW_THRESHOLD` (default 200 rows — comfortably above
+the ~4-6 rows of normal poll lag observed on a live check, comfortably below a real
+desync like the ~960K-row 2026-08-17 incident).
 
 ---
 
@@ -142,8 +146,10 @@ own root documentation (`CLAUDE.md`) that should be corrected:
 - **Redis section** should note the in-process fallback (§5 above) rather than
   implying Redis caching is fully operational.
 
-**Status:** open, low-effort — a documentation-only fix once someone has 15 minutes,
-or as a side effect of doing §1.
+**Status:** closed (2026-08-28) — station count corrected to 9, the §7 pipeline
+diagram now shows the backend reading Firestore directly (Postgres populated but
+not in the serving path), and the Redis section/table notes the in-process fallback
+instead of implying Redis is live in prod.
 
 ---
 

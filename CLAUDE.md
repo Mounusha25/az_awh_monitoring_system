@@ -13,7 +13,7 @@
 **Owner/Author:** Mounusha Ram Metti — MS Data Science, ASU (GPA 4.0, Expected Dec 2026)  
 **Contact:** mmetti@asu.edu | mounushametti.vercel.app | github.com/Mounusha25  
 **Status as of May 2026:** Production operational — 70,000+ real sensor records across
-8 active monitoring stations and 14 environmental parameters. Research extension actively in development.
+9 active monitoring stations and 14 environmental parameters. Research extension actively in development.
 
 ---
 
@@ -225,30 +225,31 @@ Each AWH station runs a Raspberry Pi with `RPi_USB_Package/`. USB port assignmen
         │  Hardware sensors → Python scripts (RPi_USB_Package/)
         ▼
 [Firebase Firestore]
-  Collection: measurements
-  Document fields: timestamp, station_name, all 14 sensor params
+  Collection: stations/{station_name}/readings
+  Document fields: timestamp, all 14 sensor params
         │
-        │  ingestion_worker.py
-        │  Polls every 60s, batch 500 docs
-        │  Checkpoint: /var/lib/awh-ingestion/checkpoint.json (atomic write)
-        │  Idempotency: ON CONFLICT (time, station_id) DO NOTHING
-        ▼
-[PostgreSQL / TimescaleDB]
-  Tables: stations, measurements
-        │
-        │  Redis cache (cache.py) — hot query results, reduces DB load
-        ▼
-[FastAPI Backend — awh_az/backend/main.py]
-  GET  /stations               → list all stations
-  GET  /stations/{id}/readings → paginated raw readings
-  GET  /stations/{id}/hourly   → hourly aggregated values
-  GET  /health                 → service health check
-  POST /export                 → CSV/JSON bulk export
-        │
-        │  HTTP REST API
-        ▼
-[Next.js Dashboard — az_awh_dashboard]
-  Station overview, time-series charts, efficiency metrics, data exports
+        ├──────────────────────────────┐
+        │                              │  read directly — this is the
+        │  ingestion_worker.py         │  live serving path today
+        │  Polls every 60s, batch 500  │
+        │  docs. Checkpoint: atomic    │
+        │  write. Idempotency:         │
+        │  ON CONFLICT DO NOTHING      │
+        ▼                              ▼
+[PostgreSQL / TimescaleDB]    [FastAPI Backend — awh_az/backend/main.py]
+  Tables: stations,             GET  /stations               → list all stations
+  measurements. Kept in         GET  /stations/{id}/readings → paginated raw readings
+  sync, but NOT read by the     GET  /stations/{id}/hourly   → hourly aggregated values
+  live backend/dashboard —      GET  /impact                 → lifetime water-harvested totals
+  see guides/KNOWN_ISSUES.md    GET  /health                 → service health check
+  #1 for the migration plan.    POST /export                 → CSV/JSON bulk export
+                                 In-process cache (cache.py) — Redis was never
+                                 provisioned in prod; falls back automatically
+                                       │
+                                       │  HTTP REST API
+                                       ▼
+                             [Next.js Dashboard — az_awh_dashboard]
+                               Station overview, time-series charts, efficiency metrics, data exports
 ```
 
 ---
@@ -270,7 +271,7 @@ Each AWH station runs a Raspberry Pi with `RPi_USB_Package/`. USB port assignmen
 ### Backend / API Layer
 - **FastAPI 0.115** + **Uvicorn** — REST API and ASGI server
 - **Pydantic v2** + **pydantic-settings** — schema validation and env config
-- **Redis 5** — response caching
+- **Redis 5** — response caching (never provisioned in prod; `cache.py` falls back to an in-process cache automatically, see §13)
 - **firebase-admin 6.6** — cloud storage access
 - **pandas + pyarrow** — data processing and Parquet export
 - **Docker** + **Render.com** — containerized cloud deployment
@@ -353,10 +354,10 @@ the demo entry point.
 |-----------|--------|
 | Raspberry Pi sensor scripts (all 5 sensors) | ✅ Production |
 | Firebase Firestore data collection | ✅ Production |
-| Firebase → PostgreSQL ingestion worker | ✅ Production |
+| Firebase → PostgreSQL ingestion worker | ✅ Production (writes Postgres, but the live backend doesn't read it — see KNOWN_ISSUES.md #1) |
 | PostgreSQL + TimescaleDB schemas | ✅ Complete |
-| FastAPI backend with 5 endpoints | ✅ Production |
-| Redis caching layer | ✅ Production |
+| FastAPI backend with 12 endpoints | ✅ Production (reads Firestore directly, not Postgres) |
+| Redis caching layer | ⚠️ In-process fallback — real Redis never provisioned in prod |
 | Pydantic data models (14 parameters) | ✅ Complete |
 | Docker + Render deployment | ✅ Production |
 | Next.js dashboard | ✅ Production |
@@ -433,12 +434,12 @@ python test_flow.py
 
 | Decision | Rationale |
 |----------|-----------|
-| Firebase as edge store → PostgreSQL as analytics store | Firebase gives the Pi a reliable cloud write target with no schema enforcement; PostgreSQL gives the backend efficient range queries and relational integrity |
+| Firebase as edge store → PostgreSQL as analytics store | Firebase gives the Pi a reliable cloud write target with no schema enforcement; PostgreSQL is *intended* to give the backend efficient range queries and relational integrity, but the live backend still reads Firestore directly today — see KNOWN_ISSUES.md #1 for the migration this decision assumes |
 | `ON CONFLICT DO NOTHING` in ingestion | Double idempotency: checkpoint prevents re-fetching; conflict clause prevents duplicates if checkpoint is stale after a crash |
 | Atomic checkpoint write (`.tmp` → rename) | If process is killed mid-write, original checkpoint is intact — prevents re-ingesting all historical data on restart |
 | All 14 sensor fields Optional in Pydantic | Different stations have different hardware configurations — schema tolerates heterogeneous setups without failing |
 | TimescaleDB schema alongside simple PostgreSQL | Hypertables give 10–100× faster range queries at scale; simple schema for dev/low-volume deployments |
-| Redis cache in front of API | Dashboards repeatedly request the same date ranges — caching reduces DB load and latency for common read patterns |
+| Cache in front of API (Redis, falls back to in-process) | Dashboards repeatedly request the same date ranges — caching reduces DB load and latency for common read patterns. Redis was never provisioned in prod, so `cache.py`'s in-process fallback is what's actually running |
 | udev rules for stable USB port names | Linux assigns ttyUSB numbers by plug-in order at boot — udev rules bind each sensor to a permanent symlink regardless of plug order |
 | Time-based train/val/test split (not random) | Random splits on time-series data leak future information into training, producing falsely optimistic model evaluation |
 
