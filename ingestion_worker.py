@@ -386,6 +386,7 @@ class MeasurementInserter:
                             doc.get('voltage'),
                             doc.get('power'),
                             doc.get('energy'),
+                            doc.get('current'),
                             doc.get('flow_lmin'),
                             doc.get('flow_hz'),
                             doc.get('flow_total')
@@ -406,7 +407,7 @@ class MeasurementInserter:
                             temperature, humidity, velocity, unit,
                             outtake_temperature, outtake_humidity, outtake_velocity, outtake_unit,
                             weight, pump_status,
-                            voltage, power, energy,
+                            voltage, power, energy, current,
                             flow_lmin, flow_hz, flow_total
                         ) VALUES %s
                         ON CONFLICT (time, station_id) DO NOTHING

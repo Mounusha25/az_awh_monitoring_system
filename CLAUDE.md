@@ -228,28 +228,40 @@ Each AWH station runs a Raspberry Pi with `RPi_USB_Package/`. USB port assignmen
   Collection: stations/{station_name}/readings
   Document fields: timestamp, all 14 sensor params
         │
-        ├──────────────────────────────┐
-        │                              │  read directly — this is the
-        │  ingestion_worker.py         │  live serving path today
-        │  Polls every 60s, batch 500  │
-        │  docs. Checkpoint: atomic    │
-        │  write. Idempotency:         │
-        │  ON CONFLICT DO NOTHING      │
-        ▼                              ▼
-[PostgreSQL / TimescaleDB]    [FastAPI Backend — awh_az/backend/main.py]
-  Tables: stations,             GET  /stations               → list all stations
-  measurements. Kept in         GET  /stations/{id}/readings → paginated raw readings
-  sync, but NOT read by the     GET  /stations/{id}/hourly   → hourly aggregated values
-  live backend/dashboard —      GET  /impact                 → lifetime water-harvested totals
-  see guides/KNOWN_ISSUES.md    GET  /health                 → service health check
-  #1 for the migration plan.    POST /export                 → CSV/JSON bulk export
-                                 In-process cache (cache.py) — Redis was never
-                                 provisioned in prod; falls back automatically
-                                       │
-                                       │  HTTP REST API
-                                       ▼
-                             [Next.js Dashboard — az_awh_dashboard]
-                               Station overview, time-series charts, efficiency metrics, data exports
+        ├───────────────────────────────┐
+        │  ingestion_worker.py          │  read directly — still the source for
+        │  Polls every 60s, batch 500   │  /stations, /stations-registry,
+        │  docs. Checkpoint: atomic     │  /impact, /export
+        │  write. Idempotency:          │
+        │  ON CONFLICT DO NOTHING       │
+        ▼                               │
+[PostgreSQL]                            │
+  Tables: stations, measurements.       │
+  As of 2026-08-28, IS read by the      │
+  backend — /readings and /hourly       │
+  query it directly instead of          │
+  Firestore (see KNOWN_ISSUES.md #1).   │
+  Plain indexed table, not a            │
+  TimescaleDB hypertable — not          │
+  needed at current scale.              │
+        │                               │
+        └───────────────┬───────────────┘
+                         ▼
+           [FastAPI Backend — awh_az/backend/main.py]
+             GET  /stations               → list all stations (Firestore)
+             GET  /stations/{id}/readings → paginated raw readings (Postgres)
+             GET  /stations/{id}/hourly   → hourly aggregated values (Postgres)
+             GET  /impact                 → lifetime water-harvested totals (Firestore)
+             GET  /health                 → service health check
+             POST /export                 → CSV/JSON bulk export (Firestore — still
+                                             slow on wide ranges, see KNOWN_ISSUES.md #1)
+             In-process cache (cache.py) — Redis was never provisioned in
+             prod; falls back automatically
+                         │
+                         │  HTTP REST API
+                         ▼
+           [Next.js Dashboard — az_awh_dashboard]
+             Station overview, time-series charts, efficiency metrics, data exports
 ```
 
 ---
@@ -354,9 +366,9 @@ the demo entry point.
 |-----------|--------|
 | Raspberry Pi sensor scripts (all 5 sensors) | ✅ Production |
 | Firebase Firestore data collection | ✅ Production |
-| Firebase → PostgreSQL ingestion worker | ✅ Production (writes Postgres, but the live backend doesn't read it — see KNOWN_ISSUES.md #1) |
-| PostgreSQL + TimescaleDB schemas | ✅ Complete |
-| FastAPI backend with 12 endpoints | ✅ Production (reads Firestore directly, not Postgres) |
+| Firebase → PostgreSQL ingestion worker | ✅ Production (writes Postgres; `/readings` and `/hourly` now read it — see KNOWN_ISSUES.md #1) |
+| PostgreSQL + TimescaleDB schemas | ✅ Complete (plain indexed table in use, not a hypertable — sufficient at current scale) |
+| FastAPI backend with 12 endpoints | ✅ Production (hybrid: `/readings`/`/hourly` read Postgres, the rest read Firestore) |
 | Redis caching layer | ⚠️ In-process fallback — real Redis never provisioned in prod |
 | Pydantic data models (14 parameters) | ✅ Complete |
 | Docker + Render deployment | ✅ Production |
@@ -434,7 +446,7 @@ python test_flow.py
 
 | Decision | Rationale |
 |----------|-----------|
-| Firebase as edge store → PostgreSQL as analytics store | Firebase gives the Pi a reliable cloud write target with no schema enforcement; PostgreSQL is *intended* to give the backend efficient range queries and relational integrity, but the live backend still reads Firestore directly today — see KNOWN_ISSUES.md #1 for the migration this decision assumes |
+| Firebase as edge store → PostgreSQL as analytics store | Firebase gives the Pi a reliable cloud write target with no schema enforcement; PostgreSQL gives the backend efficient range queries and relational integrity. As of 2026-08-28, `/readings` and `/hourly` query Postgres directly (see KNOWN_ISSUES.md #1); `/stations`, `/stations-registry`, `/impact`, and `/export` still read Firestore directly — a deliberate hybrid, not an oversight, since those don't need Postgres's range-scan performance |
 | `ON CONFLICT DO NOTHING` in ingestion | Double idempotency: checkpoint prevents re-fetching; conflict clause prevents duplicates if checkpoint is stale after a crash |
 | Atomic checkpoint write (`.tmp` → rename) | If process is killed mid-write, original checkpoint is intact — prevents re-ingesting all historical data on restart |
 | All 14 sensor fields Optional in Pydantic | Different stations have different hardware configurations — schema tolerates heterogeneous setups without failing |

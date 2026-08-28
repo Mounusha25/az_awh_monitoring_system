@@ -46,6 +46,7 @@ CREATE TABLE IF NOT EXISTS measurements (
     voltage DOUBLE PRECISION,
     power DOUBLE PRECISION,
     energy DOUBLE PRECISION,
+    current DOUBLE PRECISION,
 
     -- Flow metrics
     flow_lmin DOUBLE PRECISION,

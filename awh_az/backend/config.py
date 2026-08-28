@@ -29,6 +29,11 @@ class Settings(BaseSettings):
         os.path.dirname(__file__), "awh-project-460421-52cd6ebf2aa3.json"
     )
     firestore_collection: str = "stations"
+
+    # PostgreSQL Configuration — serves /readings and /hourly (kept in sync
+    # by ingestion_worker.py); Firestore remains the source of truth for
+    # /stations, /stations-registry, and /impact.
+    database_url: str = "postgresql://mounusha@localhost:5432/awh_db"
     
     # Data Configuration
     max_query_limit: int = 10000

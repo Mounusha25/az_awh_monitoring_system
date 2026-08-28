@@ -44,9 +44,28 @@ I/O should meaningfully cut wall-clock time (plausibly 3-5x). Still fundamentall
 bounded by Firestore's total per-document cost for the very widest ranges, and adds
 concurrent load to an already-strained free-tier backend — a mitigation, not a fix.
 
-**Status:** open. User explicitly chose to leave this as-is for now (2026-08-17) —
-current behavior (bounded wait + visible progress + honest truncation warning) is
-good enough for typical day/week-scale ranges.
+**Status:** closed (2026-08-28) — `/stations/{id}/readings` and `/stations/{id}/hourly`
+now query Postgres via a connection pool instead of Firestore; response shape is
+unchanged so no frontend changes were needed. Measured: full-history hourly
+aggregation for `station_AquaPars@PowerPlant` (~127K readings, 380 days, 1925 hourly
+buckets) — **1.7s**, down from an unbounded multi-minute Firestore stream. Deep-offset
+`/readings` pagination (offset=100000) — **0.12s**, down from the cursor-skip-and-discard
+cost that made deep pages disproportionately slow. Verified field-for-field identical
+output against the equivalent live Firestore document before cutting over. Confirmed
+along the way: the `timescaledb` extension is NOT installed (plain indexed table) —
+per the original note here, that's fine at current scale; hypertable conversion is
+still available later if needed. `/export` was deliberately left on Firestore (out of
+scope for this fix) and is still slow on wide/unbounded ranges — see the mitigation
+above if that becomes the next bottleneck.
+
+**Found and fixed along the way, not originally scoped:** `current` (amperage) was
+never in `ingestion_worker.py`'s INSERT statement — Postgres had no `current` column
+at all, silently null forever on a field Firestore has real data for (100% of
+`station_AquaPars@PowerPlant`'s last 500 readings). Added the column, fixed the
+worker's INSERT, restarted it, and backfilled all historical rows from Firestore
+(`backfill_current_field.py`, ~3.5 min for 1.5M rows across 9 stations, idempotent/
+safe to re-run). Verified `current_mean`/`current_std` populate correctly through the
+full `/hourly` pipeline post-migration.
 
 ---
 
