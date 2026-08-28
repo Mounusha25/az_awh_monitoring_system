@@ -67,6 +67,22 @@ worker's INSERT, restarted it, and backfilled all historical rows from Firestore
 safe to re-run). Verified `current_mean`/`current_std` populate correctly through the
 full `/hourly` pipeline post-migration.
 
+**Regression found and fixed same day, in production:** the migration above assumed
+Postgres would be reachable everywhere it's used, but Render's `render.yaml` has no
+`DATABASE_URL` at all — production has no network path to the local Postgres instance
+`ingestion_worker.py` writes to (it's a `launchd` service on a personal Mac, see #3).
+Deployed straight to production, this made `/readings` and `/hourly` hard-503 with
+`"PostgreSQL not initialised"` — confirmed live against
+`az-awh-monitoring-system.onrender.com`. Fixed by giving both endpoints a Firestore
+fallback path (the exact pre-migration logic, kept rather than deleted) used whenever
+`db_pool` is unset, mirroring the resilience pattern `cache.py` already uses for Redis.
+Verified the fallback directly (forced `db_pool = None`, both endpoints still returned
+correct data, `current_mean` included). `/health` now reports Postgres status
+separately so this class of gap is visible before a user hits it, not after. Net
+effect: production is correct again today (back to Firestore-speed for `/readings`/
+`/hourly` until Postgres is reachable from Render); the real fix is still #3 — an
+always-on, network-reachable Postgres, not just an always-on worker.
+
 ---
 
 ## 2. Render free-tier backend: cold starts + limited throughput
@@ -104,7 +120,14 @@ running it as a background worker) so ingestion doesn't silently stop whenever t
 Mac sleeps, reboots, or is offline.
 
 **Status:** open. Worth prioritizing given this exact failure mode (worker silently
-not running) is what caused the last major data-integrity incident.
+not running) is what caused the last major data-integrity incident. **Scope grew
+2026-08-28:** it's not just the worker that needs an always-on host — Postgres itself
+is also local-only right now (`postgresql://mounusha@localhost:5432/awh_db`), which is
+why #1's migration 503'd in production until a Firestore fallback was added. Whatever
+solution is picked here needs to leave both the worker *and* a Postgres instance
+reachable from Render, not just the worker — a managed Postgres (Render's own, or
+Supabase/Neon) that both the worker and the backend can reach is probably simpler than
+self-hosting Postgres on the same VM as the worker.
 
 ---
 

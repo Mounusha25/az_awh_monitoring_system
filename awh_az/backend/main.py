@@ -235,10 +235,13 @@ async def root():
 async def health_check():
     redis_status = "online" if cache.health_check() else "offline"
     fs_status = "online" if db else "offline"
+    # "unavailable" (not "offline") — /readings and /hourly work fine without
+    # it via the Firestore fallback, this isn't a failure state on its own.
+    pg_status = "online" if db_pool else "unavailable (Firestore fallback active)"
     return HealthResponse(
         status="healthy",
         timestamp=datetime.now(timezone.utc),
-        services={"api": "online", "redis": redis_status, "firestore": fs_status},
+        services={"api": "online", "redis": redis_status, "firestore": fs_status, "postgres": pg_status},
     )
 
 
@@ -377,6 +380,25 @@ def _fetch_readings_rows(
     return rows if rows else None
 
 
+def _fetch_readings_docs_firestore(readings_ref, offset: int, limit: int):
+    """Firestore fallback for _fetch_readings_rows, used when db_pool is None.
+
+    Production (Render) has no network path to the local Postgres instance
+    ingestion_worker.py writes to — Postgres only exists on this machine
+    until KNOWN_ISSUES.md #2/#3 (always-on host) is done. Without this
+    fallback, /readings hard-503s in production the moment Postgres isn't
+    reachable, which is worse than the pre-migration Firestore behavior it's
+    replacing. Same cursor-skip approach as before the migration.
+    """
+    if offset > 0:
+        cursor_docs = list(readings_ref.limit(offset).stream())
+        if len(cursor_docs) == offset:
+            readings_ref = readings_ref.start_after(cursor_docs[-1])
+        else:
+            return None
+    return list(readings_ref.limit(limit).stream())
+
+
 # ---------------------------------------------------------------------------
 # Station readings
 # ---------------------------------------------------------------------------
@@ -391,14 +413,19 @@ async def get_station_readings(
 ):
     """Get readings for a specific station with filtering and pagination.
 
-    Reads from PostgreSQL (kept in sync by ingestion_worker.py), not
-    Firestore — Firestore streams one document at a time, which made wide
-    date ranges take 30-90s+ per 10,000-row page. An indexed Postgres range
-    scan returns in milliseconds to low seconds regardless of range width.
-    See guides/KNOWN_ISSUES.md #1.
+    Reads from PostgreSQL when available (kept in sync by ingestion_worker.py)
+    instead of Firestore — Firestore streams one document at a time, which
+    made wide date ranges take 30-90s+ per 10,000-row page. An indexed
+    Postgres range scan returns in milliseconds to low seconds regardless of
+    range width. See guides/KNOWN_ISSUES.md #1.
+
+    Falls back to Firestore when Postgres isn't reachable (e.g. in
+    production today — Render has no network path to the local Postgres
+    instance ingestion_worker.py writes to, until #2/#3 move it to an
+    always-on host). Same fallback pattern cache.py already uses for Redis.
     """
-    if not db_pool:
-        raise HTTPException(status_code=503, detail="PostgreSQL not initialised")
+    if not db:
+        raise HTTPException(status_code=503, detail="Firestore not initialised")
 
     cache_key = get_station_readings_cache_key(
         station_name, limit, offset,
@@ -415,9 +442,36 @@ async def get_station_readings(
     # When no start_date, order DESCENDING to get the latest readings first.
     ascending = start_date is not None
 
-    rows = await run_in_threadpool(
-        _fetch_readings_rows, station_name, start_date, end_date, limit, offset, ascending
-    )
+    using_postgres = bool(db_pool)
+    if using_postgres:
+        pg_rows = await run_in_threadpool(
+            _fetch_readings_rows, station_name, start_date, end_date, limit, offset, ascending
+        )
+        rows = None
+        if pg_rows:
+            # Normalize to the same shape the Firestore path produces
+            # (timestamp + station_name as top-level keys) so the parsing
+            # loop below doesn't need to know which source it came from.
+            rows = []
+            for r in pg_rows:
+                d = dict(r)
+                d["timestamp"] = d.pop("time")
+                d["station_name"] = station_name
+                rows.append(d)
+    else:
+        order_dir = firestore.Query.ASCENDING if ascending else firestore.Query.DESCENDING
+        readings_ref = (
+            db.collection(settings.firestore_collection)
+            .document(station_name)
+            .collection("readings")
+            .order_by("timestamp", direction=order_dir)
+        )
+        if start_date:
+            readings_ref = readings_ref.where("timestamp", ">=", start_date)
+        if end_date:
+            readings_ref = readings_ref.where("timestamp", "<=", end_date)
+        docs = await run_in_threadpool(_fetch_readings_docs_firestore, readings_ref, offset, limit)
+        rows = [_firestore_doc_to_dict(d.to_dict()) for d in docs] if docs else None
 
     if not rows:
         raise HTTPException(status_code=404, detail=f"Station '{station_name}' not found or has no readings")
@@ -433,8 +487,6 @@ async def get_station_readings(
 
     for row in rows:
         data = dict(row)
-        data["timestamp"] = data.pop("time")
-        data["station_name"] = station_name
 
         for key, val in data.items():
             if val is not None and key not in SKIP_FIELDS:
@@ -612,60 +664,88 @@ def _compute_hourly_aggregation_sync(
     start_date: Optional[datetime],
     end_date: Optional[datetime],
 ) -> Optional[dict]:
-    """Blocking: fetch readings from PostgreSQL and compute hourly aggregates.
+    """Blocking: fetch readings and compute hourly aggregates.
 
-    Runs inside run_in_threadpool. Both the Postgres fetch and the
-    per-reading aggregation below are synchronous/CPU-bound; calling this
-    directly from the async route would block the single event loop for the
-    whole computation (which can run over 100k+ readings for wide date
-    ranges), stalling every other request the server is handling.
+    Runs inside run_in_threadpool. Both the fetch and the per-reading
+    aggregation below are synchronous/CPU-bound; calling this directly from
+    the async route would block the single event loop for the whole
+    computation (which can run over 100k+ readings for wide date ranges),
+    stalling every other request the server is handling.
 
-    Reads from Postgres instead of Firestore for the same reason /readings
-    does (see guides/KNOWN_ISSUES.md #1) — this is the endpoint wide chart
-    ranges hit hardest. Everything below this fetch (bucketing, aggregation,
-    the efficiency/energy math) is unchanged from the Firestore version —
-    only the I/O layer moved, not the business logic that's already been
-    debugged multiple times this week.
+    Reads from Postgres when available instead of Firestore for the same
+    reason /readings does (see guides/KNOWN_ISSUES.md #1) — this is the
+    endpoint wide chart ranges hit hardest. Falls back to Firestore when
+    Postgres isn't reachable (e.g. production today, which has no network
+    path to the local Postgres instance until #2/#3 move it off this
+    machine). Everything below the fetch (bucketing, aggregation, the
+    efficiency/energy math) is identical either way — only the I/O layer
+    branches, not the business logic that's already been debugged multiple
+    times this week.
 
     Returns None if no readings were found for the range.
     """
-    station_id = _station_id_lookup(station_name)
-    if station_id is None:
-        return None
-
-    conditions = ["station_id = %(station_id)s"]
-    params: dict = {"station_id": station_id}
-    if start_date:
-        conditions.append("time >= %(start_date)s")
-        params["start_date"] = start_date
-    if end_date:
-        conditions.append("time <= %(end_date)s")
-        params["end_date"] = end_date
-
-    query = f"""
-        SELECT time, {", ".join(READING_COLUMNS)}
-        FROM measurements
-        WHERE {" AND ".join(conditions)}
-        ORDER BY time ASC
-    """
-
-    conn = db_pool.getconn()
-    try:
-        with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute(query, params)
-            pg_rows = cur.fetchall()
-    finally:
-        db_pool.putconn(conn)
-
-    # Same dict shape the Firestore path produced: timestamp as a UTC ISO
-    # string (the bucketing below slices its first 13 chars as the hour key,
-    # so this MUST be UTC — psycopg2 returns tz-aware datetimes in whatever
-    # the session timezone is, which is not guaranteed to be UTC).
     raw = []
-    for r in pg_rows:
-        d = dict(r)
-        d["timestamp"] = d.pop("time").astimezone(timezone.utc).isoformat()
-        raw.append(d)
+    if db_pool:
+        station_id = _station_id_lookup(station_name)
+        if station_id is None:
+            return None
+
+        conditions = ["station_id = %(station_id)s"]
+        params: dict = {"station_id": station_id}
+        if start_date:
+            conditions.append("time >= %(start_date)s")
+            params["start_date"] = start_date
+        if end_date:
+            conditions.append("time <= %(end_date)s")
+            params["end_date"] = end_date
+
+        query = f"""
+            SELECT time, {", ".join(READING_COLUMNS)}
+            FROM measurements
+            WHERE {" AND ".join(conditions)}
+            ORDER BY time ASC
+        """
+
+        conn = db_pool.getconn()
+        try:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                cur.execute(query, params)
+                pg_rows = cur.fetchall()
+        finally:
+            db_pool.putconn(conn)
+
+        # Same dict shape the Firestore path produces: timestamp as a UTC
+        # ISO string (the bucketing below slices its first 13 chars as the
+        # hour key, so this MUST be UTC — psycopg2 returns tz-aware
+        # datetimes in whatever the session timezone is, not guaranteed UTC).
+        for r in pg_rows:
+            d = dict(r)
+            d["timestamp"] = d.pop("time").astimezone(timezone.utc).isoformat()
+            raw.append(d)
+    else:
+        if not db:
+            return None
+        readings_ref = (
+            db.collection(settings.firestore_collection)
+            .document(station_name)
+            .collection("readings")
+            .order_by("timestamp", direction=firestore.Query.ASCENDING)
+        )
+        if start_date:
+            readings_ref = readings_ref.where("timestamp", ">=", start_date)
+        if end_date:
+            readings_ref = readings_ref.where("timestamp", "<=", end_date)
+
+        # Paginate through all readings — single .limit() caps at ~7 days at 1 reading/minute
+        page_query = readings_ref.limit(settings.max_query_limit)
+        while True:
+            batch = list(page_query.stream())
+            if not batch:
+                break
+            raw.extend(_firestore_doc_to_dict(d.to_dict()) for d in batch)
+            if len(batch) < settings.max_query_limit:
+                break
+            page_query = readings_ref.start_after(batch[-1]).limit(settings.max_query_limit)
 
     if not raw:
         return None
