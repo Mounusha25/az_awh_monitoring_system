@@ -98,6 +98,22 @@ class CreateStationRequest(BaseModel):
     location: Optional[str] = None
 
 
+class StationImpact(BaseModel):
+    """Lifetime water-harvested total for one station, precomputed offline"""
+    station_name: str
+    location: Optional[str] = None
+    total_liters: float
+    readings_processed: int
+    updated_at: Optional[datetime] = None
+
+
+class ImpactResponse(BaseModel):
+    """Response for /impact — aggregate real-world harvesting numbers"""
+    total_liters: float
+    stations: List[StationImpact]
+    updated_at: Optional[datetime] = None
+
+
 class ReadingsQueryParams(BaseModel):
     """Query parameters for filtering readings"""
     station_name: Optional[str] = None

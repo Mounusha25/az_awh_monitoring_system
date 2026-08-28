@@ -29,6 +29,8 @@ from models import (
     StationRegistryItem,
     StationRegistryResponse,
     CreateStationRequest,
+    StationImpact,
+    ImpactResponse,
 )
 from config import settings
 from cache import cache, get_stations_cache_key, get_station_readings_cache_key, invalidate_station_cache
@@ -777,6 +779,56 @@ async def get_hourly_aggregation(
 
     cache.set(hourly_cache_key, result, ttl=600)
     return result
+
+
+# ---------------------------------------------------------------------------
+# Impact — lifetime water-harvested totals
+# ---------------------------------------------------------------------------
+IMPACT_CACHE_KEY = "impact_summary"
+
+
+@app.get("/impact", response_model=ImpactResponse, tags=["Impact"])
+async def get_impact():
+    """Real-world cumulative water harvested, across every station with a
+    precomputed lifetime total (see compute_lifetime_totals.py).
+
+    A station's total only appears once that offline job has run for it —
+    summing the filtered weight-delta history live here would mean
+    streaming 100,000+ raw readings per request, which is not a live-page
+    operation. The job runs on a schedule, so this is a cheap read of
+    whatever it last computed, not a live computation.
+    """
+    if not db:
+        raise HTTPException(status_code=503, detail="Firestore not initialised")
+
+    cached = cache.get(IMPACT_CACHE_KEY)
+    if cached:
+        return cached
+
+    stations_ref = db.collection(settings.firestore_collection)
+    station_impacts: List[StationImpact] = []
+    for sdoc in stations_ref.list_documents():
+        agg_doc = sdoc.collection("aggregates").document("lifetime_totals").get()
+        if not agg_doc.exists:
+            continue
+        data = agg_doc.to_dict()
+        station_impacts.append(StationImpact(
+            station_name=sdoc.id,
+            location=sdoc.id.split("@", 1)[1].strip() if "@" in sdoc.id else None,
+            total_liters=round(data.get("total_water_g", 0.0) / 1000, 3),
+            readings_processed=data.get("readings_processed", 0),
+            updated_at=data.get("updated_at"),
+        ))
+
+    station_impacts.sort(key=lambda s: s.total_liters, reverse=True)
+    response = ImpactResponse(
+        total_liters=round(sum(s.total_liters for s in station_impacts), 3),
+        stations=station_impacts,
+        updated_at=max((s.updated_at for s in station_impacts if s.updated_at), default=None),
+    )
+
+    cache.set(IMPACT_CACHE_KEY, response.dict(), ttl=300)
+    return response
 
 
 # ---------------------------------------------------------------------------
