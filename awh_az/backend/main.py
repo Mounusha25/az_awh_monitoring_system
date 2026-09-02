@@ -761,6 +761,123 @@ def _compute_hourly_aggregation_sync(
             continue
         buckets[hour_key].append(r)
 
+    # --- Bridge water/energy/efficiency deltas across hour boundaries -----
+    # Water, energy, and harvesting-efficiency's "captured" side are all
+    # deltas between CONSECUTIVE readings. Computing them only within each
+    # hour bucket (the previous approach) silently drops the delta between
+    # the last reading of one hour and the first of the next — negligible
+    # for a normal ~60s gap, but a real problem after a multi-day outage:
+    # the entire accumulated change during the outage vanished instead of
+    # landing anywhere. Confirmed this cost station_testbed_1@Powerplant
+    # ~98 kWh across one 8-day gap (2026-08-03 to 2026-08-11).
+    #
+    # Fix: walk the full chronologically-sorted reading list ONCE, compute
+    # every pairwise delta regardless of which hour(s) it spans, and
+    # attribute the whole delta to the hour of the LATER reading — "this
+    # much had accumulated by the time this reading came in." A gap-spanning
+    # delta lands as a single lump in the reconnection hour rather than
+    # being smoothed across the gap (there's no way to know when within the
+    # gap it happened), but it is no longer silently discarded.
+    WEIGHT_NOISE_FLOOR_G = 15  # see the water_produced_g note below for why
+    ENERGY_WH_HEURISTIC_THRESHOLD_KWH = 20  # see the energy_consumed_kWh note below
+
+    sorted_raw = sorted(raw, key=lambda r: r.get("timestamp", ""))
+    water_delta_by_hour: dict[str, float] = defaultdict(float)
+    energy_raw_delta_by_hour: dict[str, float] = defaultdict(float)
+    energy_span_hours_by_hour: dict[str, float] = defaultdict(float)
+    captured_g_by_hour: dict[str, float] = defaultdict(float)
+    intake_g_by_hour: dict[str, float] = defaultdict(float)
+
+    # Weight and energy each need their own "last valid value" pointer,
+    # tracked independently — testbed_1 alone has 2,392 null `energy`
+    # readings scattered through its history (4.3% of rows). Comparing only
+    # strictly-adjacent dict entries (as the first version of this fix did)
+    # means a single null breaks the chain and drops the real delta on
+    # either side of it, the same failure mode as the hour-boundary bug
+    # this whole rewrite exists to fix, just triggered by a missing value
+    # instead of a missing reading. Skipping past nulls to the last known
+    # value fixes both at once. The intake-air Δt below is intentionally
+    # NOT part of this — it's defined as time-since-the-immediately-prior
+    # reading regardless of that reading's field validity (matches
+    # guides/HARVESTING_EFFICIENCY_FORMULA.md), so it keeps using i-1.
+    last_valid_weight: Optional[float] = None
+    last_valid_energy: Optional[float] = None
+    last_valid_energy_ts: Optional[str] = None
+
+    for i in range(len(sorted_raw)):
+        cur_r = sorted_raw[i]
+        cur_ts = cur_r.get("timestamp", "")
+        if not (isinstance(cur_ts, str) and len(cur_ts) >= 13):
+            continue
+        hour_key = cur_ts[:13] + ":00:00Z"
+
+        # Water: a real jump is real regardless of how long it took to
+        # accumulate, so the noise floor (unlike the energy threshold below)
+        # does not need to scale with elapsed time.
+        cur_w = cur_r.get("weight")
+        if isinstance(cur_w, (int, float)):
+            if last_valid_weight is not None:
+                delta_w = cur_w - last_valid_weight
+                if delta_w >= WEIGHT_NOISE_FLOOR_G:
+                    water_delta_by_hour[hour_key] += delta_w
+                if delta_w > 0:
+                    captured_g_by_hour[hour_key] += delta_w
+            last_valid_weight = cur_w
+
+        # Energy: track elapsed time since the last VALID energy reading
+        # (not the last reading, which may have had a null energy field)
+        # alongside the raw delta, so the Wh-vs-kWh plausibility check can
+        # scale its threshold instead of assuming every delta represents
+        # exactly one hour of draw (a flat per-hour threshold would
+        # misclassify a legitimate multi-day accumulation as needing the
+        # /1000 correction).
+        cur_e = cur_r.get("energy")
+        if isinstance(cur_e, (int, float)):
+            if last_valid_energy is not None and last_valid_energy_ts is not None:
+                try:
+                    elapsed_s = max(
+                        (
+                            datetime.fromisoformat(cur_ts.replace("Z", "+00:00"))
+                            - datetime.fromisoformat(last_valid_energy_ts.replace("Z", "+00:00"))
+                        ).total_seconds(),
+                        0.0,
+                    )
+                except Exception:
+                    elapsed_s = 60.0
+                energy_raw_delta_by_hour[hour_key] += max(cur_e - last_valid_energy, 0)
+                energy_span_hours_by_hour[hour_key] += elapsed_s / 3600.0
+            last_valid_energy = cur_e
+            last_valid_energy_ts = cur_ts
+
+        if i == 0:
+            continue
+        prev_r = sorted_raw[i - 1]
+
+        # Intake-available water for the efficiency ratio — Δt capped at
+        # 120s regardless of the real gap length, exactly as the per-reading
+        # formula already specifies (guides/HARVESTING_EFFICIENCY_FORMULA.md):
+        # a long gap can't be credited with continuously-available intake
+        # air for the whole gap, so this side was already gap-safe. Only the
+        # per-hour bucketing around it needed fixing.
+        try:
+            elapsed_s = max(
+                (
+                    datetime.fromisoformat(cur_ts.replace("Z", "+00:00"))
+                    - datetime.fromisoformat(prev_r.get("timestamp", "").replace("Z", "+00:00"))
+                ).total_seconds(),
+                0.0,
+            )
+        except Exception:
+            elapsed_s = 60.0
+
+        t, h, v, unit = cur_r.get("temperature"), cur_r.get("humidity"), cur_r.get("velocity"), cur_r.get("unit")
+        if isinstance(t, (int, float)) and isinstance(h, (int, float)) and isinstance(v, (int, float)) and h > 0 and v > 0:
+            abs_h = _compute_absolute_humidity(t, h)
+            vel_mps = _velocity_to_mps(v, unit if isinstance(unit, str) else None)
+            if abs_h > 0 and vel_mps > 0:
+                dt_s = min(elapsed_s, 120.0)
+                intake_g_by_hour[hour_key] += abs_h * vel_mps * AWH_DUCT_AREA_M2 * dt_s
+
     hourly_rows = []
     sorted_hours = sorted(buckets.keys())
 
@@ -817,55 +934,28 @@ def _compute_hourly_aggregation_sync(
             row["abs_humidity_outtake_mean"] = None
             row["abs_humidity_outtake_std"] = None
 
-        # Water produced per hour: sum of positive weight increments (never subtract,
-        # so a pump-triggered drain — legitimate large negative jumps, confirmed by
-        # cross-checking against pump_status — doesn't get subtracted as if it were
-        # negative production). Increments below WEIGHT_NOISE_FLOOR_G are dropped
-        # first: some stations' balance readings jitter ±5-25g between consecutive
-        # readings with no real accumulating trend (confirmed on station_testbed_1 —
-        # net change over 2 days was ~170g but naively summing every positive wobble
-        # gave ~9000g, a ~50x overcount). 15g sits well below the real per-step jumps
-        # seen on a working station (station_AquaPars@PowerPlant's positive deltas are
-        # ~99.7% above this floor) while filtering out most of the noise-only jitter.
-        WEIGHT_NOISE_FLOOR_G = 15
-        weights = [(r.get("timestamp", ""), r.get("weight")) for r in readings_in_hour
-                    if isinstance(r.get("weight"), (int, float))]
-        if len(weights) >= 2:
-            weights.sort(key=lambda x: x[0])
-            weight_deltas = [weights[i][1] - weights[i - 1][1] for i in range(1, len(weights))]
-            water_produced = sum(d for d in weight_deltas if d >= WEIGHT_NOISE_FLOOR_G)
-            row["water_produced_g"] = round(water_produced, 4)
-        else:
-            row["water_produced_g"] = None
+        # Water produced per hour: bridged across hour boundaries above (see
+        # the note before the bucketing loop) so a multi-day gap's real
+        # accumulated change lands on the reconnection hour instead of being
+        # silently dropped. `None` means no weight-delta pair ended in this
+        # hour at all (distinct from a real 0 — e.g. the pump was idle).
+        row["water_produced_g"] = (
+            round(water_delta_by_hour[hour_key], 4) if hour_key in water_delta_by_hour else None
+        )
 
-        # Energy consumed per hour: sum of positive increments (never subtract), same
-        # pattern as water above — the power meter's cumulative counter periodically
-        # wraps or resets (e.g. a 16-bit register overflowing at 65535), and a plain
-        # last-minus-first delta turns that into a large negative reading.
-        #
-        # Unit handling: different power-meter driver versions deployed across
-        # stations/time report this field in different units — older/pre-fix
-        # readers upload raw cumulative Wh (values in the thousands+), the current
-        # DEM730P driver (read_power_new.py, fixed 2026-07-14, confirmed against
-        # the meter's own LCD) uploads already-converted kWh (small values, well
-        # under 1000). These stations draw roughly 1-1.5kW, so a genuine hourly
-        # kWh delta should never be more than a few kWh — anything far above that
-        # is almost certainly raw Wh that still needs the /1000 conversion. See
-        # guides/KNOWN_ISSUES.md for the underlying per-station driver mismatch.
-        ENERGY_WH_HEURISTIC_THRESHOLD_KWH = 20
-        energies = [(r.get("timestamp", ""), r.get("energy")) for r in readings_in_hour
-                     if isinstance(r.get("energy"), (int, float))]
-        if len(energies) >= 2:
-            energies.sort(key=lambda x: x[0])
-            energy_delta = sum(
-                max(energies[i][1] - energies[i - 1][1], 0)
-                for i in range(1, len(energies))
-            )
-            energy_kwh = (
-                energy_delta / 1000.0
-                if energy_delta > ENERGY_WH_HEURISTIC_THRESHOLD_KWH
-                else energy_delta
-            )
+        # Energy consumed per hour: same bridging, plus the Wh-vs-kWh
+        # plausibility threshold now scales with the elapsed time the
+        # bridged delta actually spans (energy_span_hours_by_hour), so a
+        # legitimate multi-hour or multi-day accumulation isn't
+        # misclassified as needing the /1000 raw-Wh correction just because
+        # it exceeds the flat per-hour threshold. See guides/KNOWN_ISSUES.md
+        # for the underlying per-station driver unit mismatch this guards
+        # against.
+        if hour_key in energy_raw_delta_by_hour:
+            energy_delta = energy_raw_delta_by_hour[hour_key]
+            span_hours = max(energy_span_hours_by_hour.get(hour_key, 0.0), 1.0)
+            threshold_kwh = ENERGY_WH_HEURISTIC_THRESHOLD_KWH * span_hours
+            energy_kwh = energy_delta / 1000.0 if energy_delta > threshold_kwh else energy_delta
             row["energy_consumed_kWh"] = round(energy_kwh, 4)
         else:
             row["energy_consumed_kWh"] = None
@@ -883,43 +973,13 @@ def _compute_hourly_aggregation_sync(
 
         # Hourly harvesting efficiency (%):
         # (sum of positive weight deltas) / (sum of intake-available water in same intervals) * 100
-        sorted_hour = sorted(readings_in_hour, key=lambda r: r.get("timestamp", ""))
-        captured_g = 0.0
-        intake_available_g = 0.0
-        for i in range(1, len(sorted_hour)):
-            prev_r = sorted_hour[i - 1]
-            cur_r = sorted_hour[i]
-
-            prev_w = prev_r.get("weight")
-            cur_w = cur_r.get("weight")
-            if isinstance(prev_w, (int, float)) and isinstance(cur_w, (int, float)):
-                captured_g += max(cur_w - prev_w, 0)
-
-            t = cur_r.get("temperature")
-            h = cur_r.get("humidity")
-            v = cur_r.get("velocity")
-            unit = cur_r.get("unit")
-
-            if not (isinstance(t, (int, float)) and isinstance(h, (int, float)) and isinstance(v, (int, float))):
-                continue
-            if h <= 0 or v <= 0:
-                continue
-
-            abs_h = _compute_absolute_humidity(t, h)
-            vel_mps = _velocity_to_mps(v, unit if isinstance(unit, str) else None)
-            if abs_h <= 0 or vel_mps <= 0:
-                continue
-
-            try:
-                dt_ms = (
-                    datetime.fromisoformat(cur_r.get("timestamp").replace("Z", "+00:00"))
-                    - datetime.fromisoformat(prev_r.get("timestamp").replace("Z", "+00:00"))
-                ).total_seconds() * 1000
-            except Exception:
-                dt_ms = 30000
-
-            dt_s = min(max(dt_ms / 1000.0, 0.0), 120.0)
-            intake_available_g += abs_h * vel_mps * AWH_DUCT_AREA_M2 * dt_s
+        # Both sides bridged across hour boundaries above — captured_g the
+        # same as water_produced_g; intake_available_g already had its Δt
+        # capped at 120s per the documented formula, so a long gap was
+        # already handled correctly there, it just needed to stop being
+        # scoped to one hour bucket at a time.
+        captured_g = captured_g_by_hour.get(hour_key, 0.0)
+        intake_available_g = intake_g_by_hour.get(hour_key, 0.0)
 
         row["intake_available_water_g_hourly"] = round(intake_available_g, 4) if intake_available_g > 0 else None
         row["water_captured_g_hourly"] = round(captured_g, 4) if captured_g > 0 else 0.0

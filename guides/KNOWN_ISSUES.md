@@ -242,6 +242,51 @@ with a corrected `read_power.py`.
 
 ---
 
+## 8. Hourly water/energy totals silently dropped data across reporting gaps
+
+**What:** `_compute_hourly_aggregation_sync` (`awh_az/backend/main.py`) computed water
+and energy as deltas between consecutive readings, but only *within* each clock-hour
+bucket — the delta between the last reading of one hour and the first of the next was
+never computed at all. Negligible for a normal ~60s gap between readings, but a real
+problem after a longer outage: the entire accumulated change during the outage
+vanished instead of landing anywhere. Confirmed on `station_testbed_1@Powerplant`:
+an 8-day reporting gap (2026-08-03 to 2026-08-11) meant ~98 kWh the meter itself
+recorded was completely missing from every hourly total in that window. This affected
+`/hourly`'s water and energy figures everywhere they're consumed — the dashboard's
+hourly charts, the Live Status widget's period totals, and the Compare page.
+
+A second, related bug surfaced while verifying the fix: `station_testbed_1@Powerplant`
+has 2,392 null `energy` readings scattered through its history (4.3% of rows). The
+first version of the fix compared only strictly-adjacent readings, so a single null
+broke the delta chain and dropped the real change on either side of it — the same
+failure mode, triggered by a missing *value* instead of a missing *reading*.
+
+**Fix:** `_compute_hourly_aggregation_sync` now walks the full chronologically-sorted
+reading list once (bridging both time gaps and null-value gaps by tracking each
+field's last-known-valid value independently) and attributes each delta to the hour
+of the reading that closed it, rather than requiring both readings in a pair to share
+an hour bucket. A gap's accumulated change lands as a single lump in the reconnection
+hour rather than being smoothed across the gap — there's no way to know when within
+the gap it happened — but it's no longer silently discarded. The energy Wh-vs-kWh
+plausibility check (see #7) now scales its threshold by the elapsed time each bridged
+delta actually spans, so a legitimate multi-day accumulation isn't misclassified as
+needing the /1000 raw-Wh correction just because it exceeds the old flat per-hour
+threshold.
+
+**Verified:** `station_testbed_1@Powerplant`'s full post-fix-driver history
+(2026-07-15 onward) — summed hourly energy went from 119.64 kWh (old, boundary-only
+fix) to 299.68 kWh (bridging both gap types), against a raw-meter ground truth of
+375.05 kWh. The ~75 kWh remaining gap is a single genuine anomaly correctly caught by
+the existing plausibility check (an isolated reading pair implying ~604kW average
+draw over 8 minutes — physically impossible for this station, correctly treated as a
+unit/data glitch and divided down), not a bug. `station_AquaPars@PowerPlant` (zero
+gaps, zero nulls) shows unchanged totals — no regression on the common case. All 17
+`test_ingestion_worker.py` tests still pass.
+
+**Status:** closed (2026-09-02).
+
+---
+
 ## Already fixed this session (for reference — not open items)
 
 - Dashboard download buttons failed silently (no error shown on failure) — fixed,
