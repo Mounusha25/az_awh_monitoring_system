@@ -254,6 +254,26 @@ garbage from before the 2026-07-14 fix and isn't recoverable after the fact.
 on at least `station_AquaPars@PowerPlant`'s deployed Pi script until it's redeployed
 with a corrected `read_power.py`.
 
+**Frontend bug found and fixed 2026-09-03, separate from the above:** the station
+detail page's own per-reading "Energy"/"Incremental Energy" chart and CSV export
+(`stations/[id]/page.tsx`) divided `reading.energy` by 1000 unconditionally, on the
+mistaken assumption it was raw Wh — but it's already cumulative kWh at the source
+(same fact the backend mitigation above relies on), so this was double-converting
+and displaying every station's cumulative energy 1000x too small (reported as a
+station showing ~0.5 kWh total since July when the real figure was ~450-500 kWh).
+Fixed by removing the extra `/1000`. That alone re-exposed the garbage described
+above at full scale (a multi-million-kWh spike from the pre-2026-07-14 data), so a
+`ENERGY_SANITY_CEILING_KWH = 50000` guard was added alongside it: any raw reading
+above that (a value no real station could reach in years of continuous operation)
+is treated as a gap, not plotted or exported, rather than corrected — consistent
+with this section's existing conclusion that the pre-fix data isn't recoverable.
+Also fixed in the same pass: the three per-hour charts on this page (water
+production, specific energy consumption, harvesting efficiency) each built their
+`ChartDataPoint[]` by filtering out hours where their own field was null, which
+left each chart with a different set of hours and made them drift out of visual
+alignment on the shared (categorical, not time-scale) x-axis; they now all map
+over the same hourly rows and keep nulls as real gap points instead.
+
 ---
 
 ## 8. Hourly water/energy totals silently dropped data across reporting gaps
