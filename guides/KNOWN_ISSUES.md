@@ -129,6 +129,20 @@ reachable from Render, not just the worker — a managed Postgres (Render's own,
 Supabase/Neon) that both the worker and the backend can reach is probably simpler than
 self-hosting Postgres on the same VM as the worker.
 
+**Concrete impact observed 2026-09-03:** with production Postgres unreachable
+(`/health` reports `"postgres":"unavailable (Firestore fallback active)"`), a single
+`/stations/{id}/hourly` call for a data-rich station (~130K raw readings) took
+28-33s on the Firestore fallback path — confirmed directly against
+`az-awh-monitoring-system.onrender.com` (local, Postgres-backed: 0.1s for the same
+call). The dashboard's `/compare` page calls this once per station for 5 stations,
+and — until the fix below — called it a second time for the chart, so a first visit
+could take over a minute before any content appeared, reading as "not loading at
+all" rather than "slow." Mitigated same day on the frontend (`compare/page.tsx`):
+the chart's default view now reuses the table's already-fetched hourly data instead
+of re-fetching the same window, roughly halving first-load time; a "still loading"
+notice also appears after 6s so a slow load doesn't look broken. Still fundamentally
+bounded by this issue's root cause — the real fix is Postgres reachable from Render.
+
 ---
 
 ## 4. Ingestion checkpoint/Postgres desync — recovered, but the failure mode can recur
