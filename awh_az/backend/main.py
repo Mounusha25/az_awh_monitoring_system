@@ -1,5 +1,5 @@
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Header, UploadFile, File, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from fastapi.concurrency import run_in_threadpool
@@ -17,7 +17,7 @@ import base64
 import tempfile
 
 import firebase_admin
-from firebase_admin import credentials, firestore
+from firebase_admin import credentials, firestore, storage
 
 import psycopg2
 from psycopg2 import pool as pg_pool
@@ -35,6 +35,7 @@ from models import (
     CreateStationRequest,
     StationImpact,
     ImpactResponse,
+    StationAdminUpdate,
 )
 from config import settings
 from cache import cache, get_stations_cache_key, get_station_readings_cache_key, invalidate_station_cache
@@ -45,6 +46,12 @@ logger = logging.getLogger(__name__)
 # Firebase initialization
 # ---------------------------------------------------------------------------
 db = None
+
+# ---------------------------------------------------------------------------
+# Firebase Storage bucket — backs admin station-image uploads. None unless
+# FIREBASE_STORAGE_BUCKET is configured; admin image upload 503s until then.
+# ---------------------------------------------------------------------------
+storage_bucket = None
 
 # ---------------------------------------------------------------------------
 # PostgreSQL connection pool — serves /readings and /hourly, kept in sync by
@@ -109,6 +116,25 @@ def init_firestore():
     firebase_admin.initialize_app(cred)
     db = firestore.client()
     logger.info("✅ Firestore connected (from file)")
+
+
+def init_storage():
+    """Backs admin station-image uploads. Requires init_firestore() to have
+    already initialized the default Firebase app — no-ops (leaves
+    storage_bucket None) if that failed or FIREBASE_STORAGE_BUCKET isn't set."""
+    global storage_bucket
+    if not settings.firebase_storage_bucket:
+        logger.warning("⚠️  FIREBASE_STORAGE_BUCKET not set — admin image upload disabled")
+        return
+    if not firebase_admin._apps:
+        logger.error("Firebase app not initialised — cannot init storage bucket")
+        return
+    try:
+        storage_bucket = storage.bucket(settings.firebase_storage_bucket)
+        logger.info(f"✅ Firebase Storage bucket connected: {settings.firebase_storage_bucket}")
+    except Exception as e:
+        logger.error(f"Failed to initialise Firebase Storage bucket: {e}")
+        storage_bucket = None
 
 
 def ensure_default_registry_stations():
@@ -186,12 +212,33 @@ def _build_field_groups(available_fields: list[str]) -> dict[str, list[str]]:
     return groups
 
 
+def _station_doc_id_exists(stations_ref, station_name: str) -> bool:
+    """Whether station_name is a real, known station.
+
+    NOT doc_ref.get().exists — most stations only have a `readings`
+    subcollection and no fields of their own on the parent doc, so Firestore
+    reports the parent as not existing even for perfectly real stations that
+    /stations lists every day. list_documents() is what /stations itself
+    uses to enumerate known stations, so it's the correct existence check.
+    """
+    return any(d.id == station_name for d in stations_ref.list_documents())
+
+
+def require_admin_key(x_admin_key: Optional[str] = Header(None)):
+    """Gates the /admin/* write endpoints. Fails closed: rejects every
+    request (even a correct-looking one) if ADMIN_API_KEY isn't configured,
+    same philosophy as the dashboard's own verifyCredentials()."""
+    if not settings.admin_api_key or x_admin_key != settings.admin_api_key:
+        raise HTTPException(status_code=403, detail="Invalid or missing admin key")
+
+
 # ---------------------------------------------------------------------------
 # FastAPI app
 # ---------------------------------------------------------------------------
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_firestore()
+    init_storage()
     ensure_default_registry_stations()
     init_postgres()
     if db:
@@ -303,12 +350,18 @@ async def get_stations():
             except Exception:
                 pass
 
+        station_doc_data = sdoc.get().to_dict() or {}
+
         return StationInfo(
             station_name=sname,
             unit=latest.get("unit", "Unknown"),
             location=latest.get("location"),
             status=station_status,
             metadata=metadata,
+            display_name=station_doc_data.get("display_name"),
+            description=station_doc_data.get("description"),
+            image_url=station_doc_data.get("image_url"),
+            hidden=bool(station_doc_data.get("hidden", False)),
         )
 
     # Fetch all stations in parallel — eliminates N sequential Firestore round-trips
@@ -1064,12 +1117,14 @@ async def get_impact():
         if not agg_doc.exists:
             continue
         data = agg_doc.to_dict()
+        station_doc_data = sdoc.get().to_dict() or {}
         station_impacts.append(StationImpact(
             station_name=sdoc.id,
             location=_normalize_location_label(sdoc.id.split("@", 1)[1]) if "@" in sdoc.id else None,
             total_liters=round(data.get("total_water_g", 0.0) / 1000, 3),
             readings_processed=data.get("readings_processed", 0),
             updated_at=data.get("updated_at"),
+            hidden=bool(station_doc_data.get("hidden", False)),
         ))
 
     station_impacts.sort(key=lambda s: s.total_liters, reverse=True)
@@ -1178,6 +1233,79 @@ async def create_station(payload: CreateStationRequest):
         location=location,
         status="PENDING",
     )
+
+
+# ---------------------------------------------------------------------------
+# Admin — station metadata (display name, description, image, hidden)
+#
+# All writes land on the station's existing Firestore doc
+# (stations/{station_name}) alongside created_at/status/location — never on
+# the readings subcollection, so sensor history and ingestion are untouched
+# by these edits. Gated by require_admin_key, a shared secret the dashboard's
+# server-side admin API routes attach; the browser never sees it.
+# ---------------------------------------------------------------------------
+@app.patch("/admin/stations/{station_name}", tags=["Admin"])
+async def update_station_admin_fields(
+    station_name: str,
+    payload: StationAdminUpdate,
+    _: None = Depends(require_admin_key),
+):
+    """Edit admin-only station metadata. Only fields present in the request
+    body are written — omitted fields are left untouched on the doc."""
+    if not db:
+        raise HTTPException(status_code=503, detail="Firestore not initialised")
+
+    stations_ref = db.collection(settings.firestore_collection)
+    if not _station_doc_id_exists(stations_ref, station_name):
+        raise HTTPException(status_code=404, detail=f"Station '{station_name}' not found")
+
+    updates = payload.dict(exclude_unset=True)
+    if not updates:
+        raise HTTPException(status_code=400, detail="No fields provided")
+
+    # set(merge=True), not update() — most stations only have a `readings`
+    # subcollection and no fields of their own on the parent doc, so
+    # Firestore reports them as not existing even though _station_doc_id_exists
+    # confirmed the id is real; update() would 404 on exactly those stations,
+    # merge=True creates the doc with just these fields when that's the case.
+    stations_ref.document(station_name).set(updates, merge=True)
+    cache.delete(get_stations_cache_key())
+    return {"station_name": station_name, "updated": updates}
+
+
+@app.post("/admin/stations/{station_name}/image", tags=["Admin"])
+async def upload_station_image(
+    station_name: str,
+    file: UploadFile = File(...),
+    _: None = Depends(require_admin_key),
+):
+    """Upload a station photo to Firebase Storage and point the station's
+    image_url at it. Requires FIREBASE_STORAGE_BUCKET to be configured."""
+    if not db:
+        raise HTTPException(status_code=503, detail="Firestore not initialised")
+    if not storage_bucket:
+        raise HTTPException(status_code=503, detail="Firebase Storage not configured")
+
+    stations_ref = db.collection(settings.firestore_collection)
+    if not _station_doc_id_exists(stations_ref, station_name):
+        raise HTTPException(status_code=404, detail=f"Station '{station_name}' not found")
+
+    ext = os.path.splitext(file.filename or "")[1].lower() or ".jpg"
+    blob_path = f"station-images/{station_name}{ext}"
+    contents = await file.read()
+
+    def _upload() -> str:
+        blob = storage_bucket.blob(blob_path)
+        blob.upload_from_string(contents, content_type=file.content_type or "image/jpeg")
+        blob.make_public()
+        return blob.public_url
+
+    image_url = await run_in_threadpool(_upload)
+    # merge=True — see update_station_admin_fields for why update() alone
+    # would 404 on stations whose parent doc has no fields of its own yet.
+    stations_ref.document(station_name).set({"image_url": image_url}, merge=True)
+    cache.delete(get_stations_cache_key())
+    return {"image_url": image_url}
 
 
 @app.get("/cache/stats", tags=["Cache"])

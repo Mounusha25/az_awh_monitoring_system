@@ -34,7 +34,13 @@ class Settings(BaseSettings):
     # by ingestion_worker.py); Firestore remains the source of truth for
     # /stations, /stations-registry, and /impact.
     database_url: str = "postgresql://mounusha@localhost:5432/awh_db"
-    
+
+    # Admin panel — shared secret the dashboard's server-side admin API routes
+    # attach to admin writes; never sent to the browser. Firebase Storage bucket
+    # backs station image uploads. Both empty by default (fail closed).
+    admin_api_key: str = ""
+    firebase_storage_bucket: str = ""
+
     # Data Configuration
     max_query_limit: int = 10000
     default_page_size: int = 100

@@ -77,6 +77,19 @@ class StationInfo(BaseModel):
     location: Optional[str] = None
     status: str = "active"
     metadata: StationMetadata
+    display_name: Optional[str] = None
+    description: Optional[str] = None
+    image_url: Optional[str] = None
+    hidden: bool = False
+
+
+class StationAdminUpdate(BaseModel):
+    """Partial update for admin-editable station fields — only fields that
+    are actually provided get written to Firestore."""
+    display_name: Optional[str] = None
+    description: Optional[str] = None
+    image_url: Optional[str] = None
+    hidden: Optional[bool] = None
 
 
 class StationRegistryItem(BaseModel):
@@ -105,6 +118,7 @@ class StationImpact(BaseModel):
     total_liters: float
     readings_processed: int
     updated_at: Optional[datetime] = None
+    hidden: bool = False
 
 
 class ImpactResponse(BaseModel):
