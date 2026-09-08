@@ -60,45 +60,57 @@ Note: requires active water flow through the sensor to produce non-zero readings
 
 ### Still to fix:
 
-#### B1. awh_ui_layout.py — Pump Status Always Shows ON
+#### B1. awh_ui_layout.py — Pump Status Always Shows ON [FIXED — already correct as of 2026-09-08 audit]
 **File:** `RPi_USB_Package/awh_ui_layout.py` line ~359
 **Bug:** `bool("OFF")` returns `True` (non-empty string is truthy). Pump always shows ON.
-**Fix:** Change to `str(status).strip().upper() in ("1", "ON", "TRUE")`
+**Fix:** Already uses `str(status).strip().upper() in ("1", "ON", "TRUE")`. No change needed.
 
-#### B2. awh_ui_layout.py — Config Dropdowns Start Locked
-**File:** `RPi_USB_Package/awh_ui_layout.py` lines 223, 233, 247, 257
+#### B2. awh_ui_layout.py — Config Dropdowns Start Locked [FIXED — already correct as of 2026-09-08 audit]
+**File:** `RPi_USB_Package/awh_ui_layout.py` lines 209, 219, 234, 244
 **Bug:** All 4 comboboxes initialized with `state="disabled"` — operator can't set config before starting.
-**Fix:** Change initial state to `state="readonly"` on all 4 comboboxes.
+**Fix:** Already `state="readonly"` on all 4 comboboxes. No change needed.
 
-#### B3. intake_anemometer.py — No Timeout (Thread Blocking Risk)
+#### B3. intake_anemometer.py — No Timeout (Thread Blocking Risk) [FIXED — already correct as of 2026-09-08 audit]
 **File:** `RPi_USB_Package/intake_anemometer.py`
 **Bug:** No timeout on serial read loop. If USB drops, the thread blocks forever and the UI/station hangs.
-**Fix:** Add same timeout pattern already in outtake_anemometer.py (2s timeout, return None on expiry).
+**Fix:** Already has the same timeout pattern as outtake_anemometer.py (2s timeout, returns None on expiry). No change needed.
 
-#### B4. ingestion_worker.py — StationManager Corrupts station_id
+#### B4. ingestion_worker.py — StationManager Corrupts station_id [FIXED — already correct as of 2026-09-08 audit]
 **File:** `ingestion_worker.py`
 **Bug:** `ON CONFLICT (station_name) DO UPDATE SET station_id = EXCLUDED.station_id` — updating a primary key on conflict corrupts foreign key relationships in the measurements table.
-**Fix:** Remove `SET station_id = EXCLUDED.station_id` from the ON CONFLICT clause. Only update non-key fields (station_name is the conflict target, station_id should never change).
+**Fix:** Current ON CONFLICT clauses (`stations`: `DO NOTHING`; `measurements`: `(time, station_id) DO NOTHING`) already avoid this. No change needed.
 
-#### B5. Schema Column Mismatch — Flow Fields
+#### B5. Schema Column Mismatch — Flow Fields [FIXED — already correct as of 2026-09-08 audit]
 **Files:** `schema_postgresql_simple.sql`, `schema_timescaledb.sql`
 **Bug:** SQL schema defines `flow_rate` and `flow_unit` but ingestion worker and Pydantic models use `flow_lmin`, `flow_hz`, `flow_total`. Live data is silently dropped.
-**Fix:** Update schema to match code: rename `flow_rate` → `flow_lmin`, replace `flow_unit` with `flow_hz` and `flow_total`.
+**Fix:** Both schema files already define `flow_lmin`, `flow_hz`, `flow_total`. No change needed.
 
-#### B6. Schema — Energy Column Wrong Type
+#### B6. Schema — Energy Column Wrong Type [FIXED — already correct as of 2026-09-08 audit]
 **Files:** `schema_postgresql_simple.sql`, `schema_timescaledb.sql`
 **Bug:** `energy` column is `BIGINT` but the DEM730P returns kWh as a float (e.g. 12.45). Values are truncated.
-**Fix:** Change `energy BIGINT` → `energy FLOAT`.
+**Fix:** Both schema files already define `energy DOUBLE PRECISION`. No change needed.
 
-#### B7. Merge AquaPars1.py and AquaPars1_new_pm.py
+#### B7. Merge AquaPars1.py and AquaPars1_new_pm.py [RECLASSIFIED 2026-09-08 — not a duplicate, do not merge]
 **File:** `RPi_USB_Package/AquaPars1.py` and `RPi_USB_Package/AquaPars1_new_pm.py`
-**Bug:** Two near-identical files. Maintenance burden — any bug fix needs to be applied twice.
-**Fix:** Keep `AquaPars1_new_pm.py` as the canonical file, rename to `AquaPars1.py`, archive the old one.
+**Was assumed:** two near-identical files, pure maintenance burden, safe to collapse into one.
+**Actually:** re-diffed 2026-09-08 — they're per-station runtime configs, not accidental duplicates. Each
+hardcodes a different `STATION_NAME` (`station_AquaPars #2 @Power Station, Tempe` vs
+`station_testbed_1@Powerplant`) and a different power-meter driver import (`read_power` vs
+`read_power_new`), because those two physical stations run different meter hardware. Renaming one over
+the other would silently change which station a Pi reports as, or swap its power-meter driver — wrong
+without physical Pi access to verify which file is actually deployed where. Do not merge without that
+verification; if consolidation is still wanted, the real fix is parameterizing `STATION_NAME` and the
+power-meter driver (e.g. via env var/CLI arg) rather than picking one file as canonical.
+**Found and fixed in the same pass:** `AquaPars1_new_pm.py` had a stale-power-reading guard (skips
+re-uploading a frozen power value if the last reading is older than `READER_STALE_SEC`) that
+`AquaPars1.py` was missing, even though `AquaPars1.py` already had the same `READER_STALE_SEC`/
+`_last_power_ts`/watchdog infrastructure. Backported so both stations get the same protection against
+silently re-uploading a stuck power reading.
 
-#### B8. read_power_new.py — NoneType Error on Stop
+#### B8. read_power_new.py — NoneType Error on Stop [FIXED — already correct as of 2026-09-08 audit]
 **File:** `RPi_USB_Package/read_power_new.py`
 **Bug:** When `stop()` is called while `_run()` thread is mid-poll, `_instrument` is set to None before the thread checks it. Causes `'NoneType' object cannot be interpreted as an integer`.
-**Fix:** Add `self._running` check before using `self._instrument` in `_run()` loop.
+**Fix:** Already guards `_run()` with `self._running`/`self._instrument` checks. No change needed.
 
 #### B9. ingestion_worker.py — Shared Global Checkpoint Silently Skips Low-Volume Stations [FIXED 2026-07-27]
 **File:** `ingestion_worker.py::FirebaseClient.fetch_new_documents`

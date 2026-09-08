@@ -289,8 +289,16 @@ class StationController:
             ST, GS, check, weight, unit = None, None, None, None, None
             print("[Save] WARNING: No balance data yet")
 
-        if self.power_tuple:
+        power_age_sec = now_ts - self._last_power_ts
+        if self.power_tuple and power_age_sec <= READER_STALE_SEC:
             V, A, W, Wh = self.power_tuple
+        elif self.power_tuple:
+            # Had a reading before, but it's too old to trust — send None instead
+            # of silently re-uploading a frozen number. A stuck power reader once
+            # kept re-sending the same energy value for hours, which looked like
+            # real flat consumption until someone noticed it wasn't updating.
+            V, A, W, Wh = None, None, None, None
+            print(f"[Save] WARNING: Power meter data is stale ({power_age_sec:.0f}s since last reading) — omitting from upload")
         else:
             V, A, W, Wh = None, None, None, None
             print("[Save] WARNING: No power meter data yet")
