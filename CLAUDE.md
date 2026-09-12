@@ -159,30 +159,45 @@ az_awh_dashboard/
 └── package.json       ← Next.js 15, React 19, TypeScript, Tailwind CSS
 ```
 
-### ⚠️ Production / deployment repo — read before pushing anything
+### ⚠️ Production / deployment repos — read before pushing anything
 
-**`https://github.com/azawhasu-team/AzAWH-Project`** (branch `main`) is the **only**
-repo Vercel deploys the live dashboard (`azawhdashboard.vercel.app`) from. **All
-commits and pushes — dashboard and monitoring-system code alike — go there and
-ONLY there.** As of 2026-09-09, do not push to `Mounusha25/az_awh_dashboard` or
-`Mounusha25/az_awh_monitoring_system` anymore; pushes to those repos do not
-reach production and will not show up on the live site.
+The dashboard and the backend ship from **two different repos** — this was
+learned the hard way on 2026-09-09 (dashboard) and 2026-09-12 (backend), after
+each was initially assumed to share one deploy target and didn't.
+
+- **Dashboard (Next.js, Vercel → `azawhdashboard.vercel.app`)** deploys **only**
+  from `https://github.com/azawhasu-team/AzAWH-Project` (branch `main`). Do not
+  push dashboard changes to `Mounusha25/az_awh_dashboard` expecting them to go
+  live — verified 2026-09-09 that they don't.
+- **Backend (FastAPI, Render → `az-awh-monitoring-system.onrender.com`)**
+  deploys from `https://github.com/Mounusha25/az_awh_monitoring_system`
+  (branch `main`) — confirmed 2026-09-12 by pushing an `awh_az/backend/main.py`
+  change there and watching Render redeploy and expose the new endpoint within
+  seconds. This is a normal `git push origin main` from this local checkout,
+  no clone-diff-copy needed.
+
+So: a backend-only change → push this repo directly. A dashboard-only change →
+use the `azawhasu-team/AzAWH-Project` procedure below. A change touching both
+needs both pushes. If unsure whether a push actually took effect, verify
+directly — curl the live backend's `/openapi.json` for the new path, or check
+the live dashboard — rather than assuming.
 
 This local checkout (`Mounusha25/az_awh_monitoring_system`, with
-`az_awh_dashboard` as a git submodule) remains the working copy for editing —
-just don't `git push` it. `azawhasu-team/AzAWH-Project` is a **monorepo** with
-the same top-level layout as this repo, but the dashboard lives there as
-regular tracked files at `awh_az/water-station-dashboard/`, not a submodule —
-and its git history is unrelated/diverged from both `Mounusha25` repos (confirmed
-via `git merge-base`), so a normal `git push` into it isn't possible from either
-local checkout. To ship a change:
+`az_awh_dashboard` as a git submodule) remains the working copy for editing,
+and pushing it (for backend/monitoring-system changes) is how those reach
+production. `azawhasu-team/AzAWH-Project` is a separate **monorepo** with the
+same top-level layout as this repo, but the dashboard lives there as regular
+tracked files at `awh_az/water-station-dashboard/`, not a submodule — and its
+git history is unrelated/diverged from both `Mounusha25` repos (confirmed via
+`git merge-base`), so a normal `git push` into it isn't possible from either
+local checkout. To ship a **dashboard** change there:
 
 1. Make/verify the change in this local checkout as normal.
 2. Clone `azawhasu-team/AzAWH-Project` fresh into a scratch directory.
-3. Diff the locally-changed files against that clone's copy at the matching
-   path (dashboard changes → `awh_az/water-station-dashboard/...`; monitoring-
-   system changes → same top-level path) to find exactly what changed —
-   exclude `.env*`, `next-env.d.ts`, `*.tsbuildinfo`, `node_modules`, `.next`.
+3. Diff the locally-changed dashboard files against that clone's copy at the
+   matching path (`awh_az/water-station-dashboard/...`) to find exactly what
+   changed — exclude `.env*`, `next-env.d.ts`, `*.tsbuildinfo`, `node_modules`,
+   `.next`.
 4. Copy just those files into the clone, `git add`/commit/push from there.
 
 ---
