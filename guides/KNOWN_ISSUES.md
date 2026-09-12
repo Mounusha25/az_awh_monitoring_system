@@ -245,14 +245,28 @@ garbage from before the 2026-07-14 fix and isn't recoverable after the fact.
 **Real fix:** two parts, both on the Raspberry Pi side —
 1. Fix `read_power.py` to read energy as a combined 32-bit register (high+low), the
    same pattern current/power already use, so the counter stops wrapping at ~65.5 kWh.
+   **Fixed in the repo 2026-09-11:** `_poll_once()` now also reads register 6
+   (`response[15:17]`, already being requested via `register_count=0x000A` but never
+   parsed) as `energy_high_raw` and combines it with the existing low register the
+   same way current/power already do. Verified with a synthetic Modbus response
+   (`energy_high=1, energy_low=1` → 65,537 raw Wh → 65.537 kWh, where the old
+   single-register read would have reported 0.001 kWh) — the wrap no longer happens,
+   and normal sub-65.5kWh values are byte-for-byte unchanged since `high=0` degenerates
+   to the old formula. Not yet redeployed to any physical station.
 2. Standardize which unit every deployed station's power-meter driver uploads (pick
    one — kWh matches `read_power_new.py`'s already-fixed, LCD-confirmed behavior — and
-   make `read_power.py` match it), then redeploy to every physical station so the
-   backend no longer needs to guess.
+   make `read_power.py` match it). `read_power.py`'s own `/1000.0` conversion already
+   does this in the repo; the mismatch is a deployment-drift problem (the Pi currently
+   running `station_AquaPars@PowerPlant` predates that conversion), not something left
+   to fix in this file.
+3. Redeploy the fixed `read_power.py` to every physical station running it — needs
+   physical/SSH Pi access, not done as part of the 2026-09-11 fix above.
 
-**Status:** open. Backend-side mitigation shipped 2026-08-26; root cause is still live
-on at least `station_AquaPars@PowerPlant`'s deployed Pi script until it's redeployed
-with a corrected `read_power.py`.
+**Status:** partially fixed. Backend-side mitigation shipped 2026-08-26; the 32-bit
+register combine is now fixed in the repo (2026-09-11) but **not yet deployed** — the
+physical Pi running `station_AquaPars@PowerPlant` (and any other station on this
+driver) is still running the old, wrapping code until someone with hardware access
+redeploys `read_power.py`.
 
 **Frontend bug found and fixed 2026-09-03, separate from the above:** the station
 detail page's own per-reading "Energy"/"Incremental Energy" chart and CSV export

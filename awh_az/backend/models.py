@@ -92,6 +92,38 @@ class StationAdminUpdate(BaseModel):
     hidden: Optional[bool] = None
 
 
+class AdminCreateStationRequest(BaseModel):
+    """Request body for POST /admin/stations. Unlike CreateStationRequest
+    (used by the RPi control panel, station_name + location only), this lets
+    an admin set display_name/description up front too."""
+    station_name: str
+    display_name: Optional[str] = None
+    description: Optional[str] = None
+    location: Optional[str] = None
+
+
+class AdminStationListItem(BaseModel):
+    """Full admin view of one station. Unlike StationInfo (from GET /stations),
+    this includes stations with zero readings yet — a station just created via
+    POST /admin/stations has none, and would otherwise be invisible in the
+    admin panel until its first real sensor reading arrives."""
+    station_name: str
+    display_name: Optional[str] = None
+    description: Optional[str] = None
+    image_url: Optional[str] = None
+    hidden: bool = False
+    location: Optional[str] = None
+    status: str  # "active" | "inactive" | "pending" (no readings yet)
+    total_readings: int = 0
+    last_reading: Optional[str] = None
+
+
+class DeleteStationResponse(BaseModel):
+    """Response for DELETE /admin/stations/{station_name}."""
+    station_name: str
+    readings_deleted: int
+
+
 class StationRegistryItem(BaseModel):
     """Lightweight registry entry for a station (used by RPi UI and validation)"""
     station_name: str

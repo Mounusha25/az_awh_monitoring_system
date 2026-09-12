@@ -77,11 +77,20 @@ class PowerMeterReader:
             current_high_raw = struct.unpack('>H', response[7:9])[0]
             power_low_raw = struct.unpack('>H', response[9:11])[0]
             power_high_raw = struct.unpack('>H', response[11:13])[0]
-            energy_raw = struct.unpack('>H', response[13:15])[0]
+            # Energy used to be read as a single 16-bit register (response[13:15]
+            # only), unlike voltage/current/power just above it — that wraps at
+            # 65,536 raw Wh (~65.5 kWh) and did, roughly every 9-10 days at this
+            # station's power draw (see guides/KNOWN_ISSUES.md #7). Register 6
+            # (response[15:17]) was already being requested/received (register_count
+            # covers registers 0-9) but never read; combining it the same way
+            # current/power already do fixes the wrap without any protocol change.
+            energy_low_raw = struct.unpack('>H', response[13:15])[0]
+            energy_high_raw = struct.unpack('>H', response[15:17])[0]
 
             voltage = round(voltage_raw * 0.1, 3)
             current = round((current_high_raw * 65536 + current_low_raw) * 0.001, 3)
             power = round((power_high_raw * 65536 + power_low_raw) * 0.1, 3)
+            energy_raw = energy_high_raw * 65536 + energy_low_raw
             # energy_raw is in Wh; convert to kWh so all stations report energy
             # in the same unit (see CLAUDE.md data model / matching fix in
             # read_power_new.py).

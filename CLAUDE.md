@@ -159,6 +159,32 @@ az_awh_dashboard/
 └── package.json       ← Next.js 15, React 19, TypeScript, Tailwind CSS
 ```
 
+### ⚠️ Production / deployment repo — read before pushing anything
+
+**`https://github.com/azawhasu-team/AzAWH-Project`** (branch `main`) is the **only**
+repo Vercel deploys the live dashboard (`azawhdashboard.vercel.app`) from. **All
+commits and pushes — dashboard and monitoring-system code alike — go there and
+ONLY there.** As of 2026-09-09, do not push to `Mounusha25/az_awh_dashboard` or
+`Mounusha25/az_awh_monitoring_system` anymore; pushes to those repos do not
+reach production and will not show up on the live site.
+
+This local checkout (`Mounusha25/az_awh_monitoring_system`, with
+`az_awh_dashboard` as a git submodule) remains the working copy for editing —
+just don't `git push` it. `azawhasu-team/AzAWH-Project` is a **monorepo** with
+the same top-level layout as this repo, but the dashboard lives there as
+regular tracked files at `awh_az/water-station-dashboard/`, not a submodule —
+and its git history is unrelated/diverged from both `Mounusha25` repos (confirmed
+via `git merge-base`), so a normal `git push` into it isn't possible from either
+local checkout. To ship a change:
+
+1. Make/verify the change in this local checkout as normal.
+2. Clone `azawhasu-team/AzAWH-Project` fresh into a scratch directory.
+3. Diff the locally-changed files against that clone's copy at the matching
+   path (dashboard changes → `awh_az/water-station-dashboard/...`; monitoring-
+   system changes → same top-level path) to find exactly what changed —
+   exclude `.env*`, `next-env.d.ts`, `*.tsbuildinfo`, `node_modules`, `.next`.
+4. Copy just those files into the clone, `git add`/commit/push from there.
+
 ---
 
 ## 5. Data Model — The 14 Sensor Parameters

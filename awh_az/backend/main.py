@@ -36,6 +36,9 @@ from models import (
     StationImpact,
     ImpactResponse,
     StationAdminUpdate,
+    AdminCreateStationRequest,
+    AdminStationListItem,
+    DeleteStationResponse,
 )
 from config import settings
 from cache import cache, get_stations_cache_key, get_station_readings_cache_key, invalidate_station_cache
@@ -1306,6 +1309,165 @@ async def upload_station_image(
     stations_ref.document(station_name).set({"image_url": image_url}, merge=True)
     cache.delete(get_stations_cache_key())
     return {"image_url": image_url}
+
+
+@app.get("/admin/stations", response_model=List[AdminStationListItem], tags=["Admin"])
+async def list_stations_admin(_: None = Depends(require_admin_key)):
+    """Full admin station list. Unlike GET /stations, this includes stations
+    with zero readings yet — needed so a station just created via
+    POST /admin/stations is immediately manageable instead of silently
+    invisible until its first real reading arrives."""
+    if not db:
+        raise HTTPException(status_code=503, detail="Firestore not initialised")
+
+    stations_ref = db.collection(settings.firestore_collection)
+    station_docs = list(stations_ref.list_documents())
+
+    def _fetch(sdoc) -> AdminStationListItem:
+        sname = sdoc.id
+        doc_data = sdoc.get().to_dict() or {}
+        # Same 50-reading cap /stations uses for its own total_readings —
+        # kept consistent rather than a true count, which would mean
+        # downloading (or count()-aggregating) every reading for every
+        # station on every admin page load.
+        reading_docs = list(
+            stations_ref.document(sname)
+            .collection("readings")
+            .order_by("timestamp", direction=firestore.Query.DESCENDING)
+            .limit(50)
+            .stream()
+        )
+
+        status = "pending"
+        last_reading = None
+        if reading_docs:
+            latest = _firestore_doc_to_dict(reading_docs[0].to_dict())
+            last_reading = latest.get("timestamp")
+            status = "inactive"
+            if last_reading:
+                try:
+                    last_dt = datetime.fromisoformat(last_reading) if isinstance(last_reading, str) else last_reading
+                    if last_dt.tzinfo is None:
+                        last_dt = last_dt.replace(tzinfo=timezone.utc)
+                    if (datetime.now(timezone.utc) - last_dt).total_seconds() / 3600 <= 48:
+                        status = "active"
+                except Exception:
+                    pass
+
+        return AdminStationListItem(
+            station_name=sname,
+            display_name=doc_data.get("display_name"),
+            description=doc_data.get("description"),
+            image_url=doc_data.get("image_url"),
+            hidden=bool(doc_data.get("hidden", False)),
+            location=doc_data.get("location"),
+            status=status,
+            total_readings=len(reading_docs),
+            last_reading=last_reading,
+        )
+
+    with ThreadPoolExecutor(max_workers=min(len(station_docs), 16) or 1) as executor:
+        items = list(executor.map(_fetch, station_docs))
+
+    items.sort(key=lambda s: s.station_name)
+    return items
+
+
+@app.post("/admin/stations", response_model=AdminStationListItem, status_code=201, tags=["Admin"])
+async def create_station_admin(
+    payload: AdminCreateStationRequest,
+    _: None = Depends(require_admin_key),
+):
+    """Register a brand-new station from the admin panel. Creates a Firestore
+    doc with status PENDING and no readings — the station becomes ACTIVE the
+    normal way, once its Raspberry Pi actually starts uploading data; this
+    just lets an admin pre-set its display name/description before that
+    happens. Returns 409 if the station_name is already taken."""
+    if not db:
+        raise HTTPException(status_code=503, detail="Firestore not initialised")
+
+    station_name = payload.station_name.strip()
+    if not station_name:
+        raise HTTPException(status_code=422, detail="station_name must not be empty")
+
+    stations_ref = db.collection(settings.firestore_collection)
+    if _station_doc_id_exists(stations_ref, station_name):
+        raise HTTPException(status_code=409, detail=f"Station '{station_name}' already exists")
+
+    location = payload.location
+    if location is None and "@" in station_name:
+        location = _normalize_location_label(station_name.split("@", 1)[1])
+
+    doc_fields = {
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "status": "PENDING",
+        "location": location or "",
+    }
+    if payload.display_name is not None:
+        doc_fields["display_name"] = payload.display_name
+    if payload.description is not None:
+        doc_fields["description"] = payload.description
+
+    stations_ref.document(station_name).set(doc_fields)
+    cache.delete(get_stations_cache_key())
+
+    return AdminStationListItem(
+        station_name=station_name,
+        display_name=payload.display_name,
+        description=payload.description,
+        image_url=None,
+        hidden=False,
+        location=location,
+        status="pending",
+        total_readings=0,
+        last_reading=None,
+    )
+
+
+def _delete_collection_recursive(coll_ref, batch_size: int = 450) -> int:
+    """Delete every document in a Firestore collection, batched (Firestore
+    caps a single batch write at 500 operations). Blocking — call via
+    run_in_threadpool from an async route. Returns the number deleted."""
+    deleted = 0
+    while True:
+        docs = list(coll_ref.limit(batch_size).stream())
+        if not docs:
+            break
+        batch = db.batch()
+        for d in docs:
+            batch.delete(d.reference)
+        batch.commit()
+        deleted += len(docs)
+        if len(docs) < batch_size:
+            break
+    return deleted
+
+
+@app.delete("/admin/stations/{station_name}", response_model=DeleteStationResponse, tags=["Admin"])
+async def delete_station_admin(
+    station_name: str,
+    _: None = Depends(require_admin_key),
+):
+    """Permanently delete a station: its entire `readings` subcollection plus
+    the parent doc. Irreversible — the dashboard's confirmation dialog is the
+    only safeguard, there's no undo here. Can take a while for a station with
+    a lot of history, since Firestore has no single "delete this collection"
+    call — it's paged out and batch-deleted 450 documents at a time."""
+    if not db:
+        raise HTTPException(status_code=503, detail="Firestore not initialised")
+
+    stations_ref = db.collection(settings.firestore_collection)
+    if not _station_doc_id_exists(stations_ref, station_name):
+        raise HTTPException(status_code=404, detail=f"Station '{station_name}' not found")
+
+    readings_ref = stations_ref.document(station_name).collection("readings")
+    readings_deleted = await run_in_threadpool(_delete_collection_recursive, readings_ref)
+
+    stations_ref.document(station_name).delete()
+    cache.delete(get_stations_cache_key())
+    invalidate_station_cache(station_name)
+
+    return DeleteStationResponse(station_name=station_name, readings_deleted=readings_deleted)
 
 
 @app.get("/cache/stats", tags=["Cache"])
