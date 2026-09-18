@@ -365,7 +365,7 @@ async def get_stations():
             description=station_doc_data.get("description"),
             image_url=station_doc_data.get("image_url"),
             hidden=bool(station_doc_data.get("hidden", False)),
-            expected_production_lday=station_doc_data.get("expected_production_lday"),
+            expected_production_g_per_min=station_doc_data.get("expected_production_g_per_min"),
         )
 
     # Fetch all stations in parallel — eliminates N sequential Firestore round-trips
@@ -988,6 +988,26 @@ def _compute_hourly_aggregation_sync(
                 dt_s = min(elapsed_s, 120.0)
                 intake_g_by_hour[hour_key] += abs_h * vel_mps * AWH_DUCT_AREA_M2 * dt_s
 
+    # Admin-entered expected production rate (g/min) for this station, if
+    # any — used below to exclude implausibly-high hourly water totals from
+    # calculations/graphs rather than let a hardware glitch (e.g. a balance
+    # reset that reads as a huge one-step gain) inflate them. Firestore is
+    # the source of truth for this station-metadata field regardless of
+    # whether readings themselves came from Postgres or Firestore above (see
+    # the /stations endpoint, which reads it the same way). None (not set,
+    # or Firestore unavailable) means: no exclusion — leave water_produced_g
+    # exactly as computed above.
+    expected_g_per_min: Optional[float] = None
+    if db:
+        try:
+            station_doc = db.collection(settings.firestore_collection).document(station_name).get()
+            station_doc_data = station_doc.to_dict() or {}
+            raw_expected = station_doc_data.get("expected_production_g_per_min")
+            if isinstance(raw_expected, (int, float)):
+                expected_g_per_min = raw_expected
+        except Exception:
+            expected_g_per_min = None
+
     hourly_rows = []
     sorted_hours = sorted(buckets.keys())
 
@@ -1052,6 +1072,24 @@ def _compute_hourly_aggregation_sync(
         row["water_produced_g"] = (
             round(water_delta_by_hour[hour_key], 4) if hour_key in water_delta_by_hour else None
         )
+
+        # If the admin has set an expected production rate for this station,
+        # cap any hour's total at 3x what that rate would produce in an hour
+        # — a real station doesn't triple its rated output, so anything past
+        # that is almost certainly a sensor glitch, not water. Only the
+        # excess above the cap is dropped (partial credit, same pattern as
+        # WATER_RATE_CAP_G_PER_S above), not the whole hour, so a station
+        # that's genuinely just running hot still gets its plausible portion
+        # counted. Capped here (before energy-per-liter/efficiency/totals
+        # below all consume it) so the same capped value flows into every
+        # downstream calculation and graph for this hour, not just the raw
+        # water chart. No expected rate set → skip this entirely, unchanged
+        # from prior behavior.
+        if expected_g_per_min is not None and row["water_produced_g"] is not None:
+            expected_g_per_hour = expected_g_per_min * 60.0
+            max_plausible_g = 3 * expected_g_per_hour
+            if row["water_produced_g"] > max_plausible_g:
+                row["water_produced_g"] = round(max_plausible_g, 4)
 
         # Energy consumed per hour: same bridging, plus the Wh-vs-kWh
         # plausibility threshold now scales with the elapsed time the
@@ -1418,7 +1456,7 @@ async def list_stations_admin(_: None = Depends(require_admin_key)):
             status=status,
             total_readings=len(reading_docs),
             last_reading=last_reading,
-            expected_production_lday=doc_data.get("expected_production_lday"),
+            expected_production_g_per_min=doc_data.get("expected_production_g_per_min"),
         )
 
     with ThreadPoolExecutor(max_workers=min(len(station_docs), 16) or 1) as executor:
@@ -1462,8 +1500,8 @@ async def create_station_admin(
         doc_fields["display_name"] = payload.display_name
     if payload.description is not None:
         doc_fields["description"] = payload.description
-    if payload.expected_production_lday is not None:
-        doc_fields["expected_production_lday"] = payload.expected_production_lday
+    if payload.expected_production_g_per_min is not None:
+        doc_fields["expected_production_g_per_min"] = payload.expected_production_g_per_min
 
     stations_ref.document(station_name).set(doc_fields)
     cache.delete(get_stations_cache_key())
@@ -1477,7 +1515,7 @@ async def create_station_admin(
         location=location,
         status="pending",
         total_readings=0,
-        expected_production_lday=payload.expected_production_lday,
+        expected_production_g_per_min=payload.expected_production_g_per_min,
         last_reading=None,
     )
 
