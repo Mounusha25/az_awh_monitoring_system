@@ -81,6 +81,7 @@ class StationInfo(BaseModel):
     description: Optional[str] = None
     image_url: Optional[str] = None
     hidden: bool = False
+    expected_production_lday: Optional[float] = None
 
 
 class StationAdminUpdate(BaseModel):
@@ -90,6 +91,7 @@ class StationAdminUpdate(BaseModel):
     description: Optional[str] = None
     image_url: Optional[str] = None
     hidden: Optional[bool] = None
+    expected_production_lday: Optional[float] = None
 
 
 class AdminCreateStationRequest(BaseModel):
@@ -100,6 +102,7 @@ class AdminCreateStationRequest(BaseModel):
     display_name: Optional[str] = None
     description: Optional[str] = None
     location: Optional[str] = None
+    expected_production_lday: Optional[float] = None
 
 
 class AdminStationListItem(BaseModel):
@@ -116,6 +119,11 @@ class AdminStationListItem(BaseModel):
     status: str  # "active" | "inactive" | "pending" (no readings yet)
     total_readings: int = 0
     last_reading: Optional[str] = None
+    # Admin-entered rated/design capacity (L/day), not a live-conditions
+    # forecast — compared against actual harvest to flag underperformance
+    # independent of weather. See HARVESTING_EFFICIENCY_FORMULA.md for the
+    # separate live-conditions efficiency metric.
+    expected_production_lday: Optional[float] = None
 
 
 class DeleteStationResponse(BaseModel):

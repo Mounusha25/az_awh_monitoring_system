@@ -12,8 +12,10 @@
 **Lab:** SSEBE (School of Sustainable Engineering and the Built Environment), Arizona State University  
 **Owner/Author:** Mounusha Ram Metti — MS Data Science, ASU (GPA 4.0, Expected Dec 2026)  
 **Contact:** mmetti@asu.edu | mounushametti.vercel.app | github.com/Mounusha25  
-**Status as of May 2026:** Production operational — 70,000+ real sensor records across
-9 active monitoring stations and 14 environmental parameters. Research extension actively in development.
+**Status as of 2026-09-18:** Production operational — 1.58M+ real sensor records across
+9 deployed monitoring stations (1 currently reporting live data; the rest have gone inactive
+at various points but their full historical record remains served) and 14 environmental
+parameters. Research extension actively in development.
 
 ---
 
@@ -414,7 +416,7 @@ the demo entry point.
 | Pydantic data models (14 parameters) | ✅ Complete |
 | Docker + Render deployment | ✅ Production |
 | Next.js dashboard | ✅ Production |
-| 70,000+ real sensor records | ✅ Live |
+| 1.58M+ real sensor records (9 stations, 1 currently live) | ✅ Live |
 | Rule-based anomaly baseline (40% false-alert reduction) | ✅ Operational |
 | Kafka + Spark streaming layer (`research_extension/phase1_streaming/`) | ✅ Built (Week 1–2) |
 | Benchmark dataset (labeled, train/val/test split) | ✅ Built — 8 real stations, scoped to temperature/humidity/weight/power (`research_extension/phase2_models/`) |

@@ -365,6 +365,7 @@ async def get_stations():
             description=station_doc_data.get("description"),
             image_url=station_doc_data.get("image_url"),
             hidden=bool(station_doc_data.get("hidden", False)),
+            expected_production_lday=station_doc_data.get("expected_production_lday"),
         )
 
     # Fetch all stations in parallel — eliminates N sequential Firestore round-trips
@@ -857,8 +858,20 @@ def _compute_hourly_aggregation_sync(
     # reading regardless of that reading's field validity (matches
     # guides/HARVESTING_EFFICIENCY_FORMULA.md), so it keeps using i-1.
     last_valid_weight: Optional[float] = None
+    last_valid_weight_ts: Optional[str] = None
     last_valid_energy: Optional[float] = None
     last_valid_energy_ts: Optional[str] = None
+
+    # Upper-bound counterpart to WEIGHT_NOISE_FLOOR_G above: a positive delta
+    # implying a sustained rate faster than this is more likely a balance
+    # reset/calibration bump/manual refill than real harvested water, so it's
+    # capped (not dropped — partial credit) at what this rate would plausibly
+    # accumulate over the delta's actual elapsed time. 1 L/min is a working
+    # estimate, not a validated hardware ceiling — revisit once confirmed.
+    # Scales with elapsed time for the same reason the energy threshold below
+    # does: a real multi-day-gap reconnection can accumulate a large delta
+    # without implying an implausible rate.
+    WATER_RATE_CAP_G_PER_S = 1000.0 / 60.0  # 1 L/min, water density ~1 g/mL
 
     for i in range(len(sorted_raw)):
         cur_r = sorted_raw[i]
@@ -869,16 +882,31 @@ def _compute_hourly_aggregation_sync(
 
         # Water: a real jump is real regardless of how long it took to
         # accumulate, so the noise floor (unlike the energy threshold below)
-        # does not need to scale with elapsed time.
+        # does not need to scale with elapsed time. The upper-bound rate cap
+        # does, though — see WATER_RATE_CAP_G_PER_S above.
         cur_w = cur_r.get("weight")
         if isinstance(cur_w, (int, float)):
-            if last_valid_weight is not None:
+            if last_valid_weight is not None and last_valid_weight_ts is not None:
                 delta_w = cur_w - last_valid_weight
+                if delta_w > 0:
+                    try:
+                        elapsed_w_s = max(
+                            (
+                                datetime.fromisoformat(cur_ts.replace("Z", "+00:00"))
+                                - datetime.fromisoformat(last_valid_weight_ts.replace("Z", "+00:00"))
+                            ).total_seconds(),
+                            0.0,
+                        )
+                    except Exception:
+                        elapsed_w_s = 60.0
+                    max_plausible_g = WATER_RATE_CAP_G_PER_S * elapsed_w_s
+                    delta_w = min(delta_w, max_plausible_g)
                 if delta_w >= WEIGHT_NOISE_FLOOR_G:
                     water_delta_by_hour[hour_key] += delta_w
                 if delta_w > 0:
                     captured_g_by_hour[hour_key] += delta_w
             last_valid_weight = cur_w
+            last_valid_weight_ts = cur_ts
 
         # Energy: track elapsed time since the last VALID energy reading
         # (not the last reading, which may have had a null energy field)
@@ -1364,6 +1392,7 @@ async def list_stations_admin(_: None = Depends(require_admin_key)):
             status=status,
             total_readings=len(reading_docs),
             last_reading=last_reading,
+            expected_production_lday=doc_data.get("expected_production_lday"),
         )
 
     with ThreadPoolExecutor(max_workers=min(len(station_docs), 16) or 1) as executor:
@@ -1407,6 +1436,8 @@ async def create_station_admin(
         doc_fields["display_name"] = payload.display_name
     if payload.description is not None:
         doc_fields["description"] = payload.description
+    if payload.expected_production_lday is not None:
+        doc_fields["expected_production_lday"] = payload.expected_production_lday
 
     stations_ref.document(station_name).set(doc_fields)
     cache.delete(get_stations_cache_key())
@@ -1420,6 +1451,7 @@ async def create_station_admin(
         location=location,
         status="pending",
         total_readings=0,
+        expected_production_lday=payload.expected_production_lday,
         last_reading=None,
     )
 
