@@ -836,6 +836,19 @@ def _compute_hourly_aggregation_sync(
     # being smoothed across the gap (there's no way to know when within the
     # gap it happened), but it is no longer silently discarded.
     WEIGHT_NOISE_FLOOR_G = 15  # see the water_produced_g note below for why
+    # The rate-based check (15g/2min == 7.5g/min) applies to every step while
+    # the station is reporting normally, no matter the exact gap — a delayed
+    # reading 5 or 20 minutes later is still "running," just slow to check
+    # in, and jitter shouldn't get a free pass just because the gap wasn't
+    # exactly 60s. Only once the gap is stale-for-real (station was offline
+    # for hours/days) does this stop applying — a genuine multi-day
+    # accumulation has a tiny per-minute rate despite being unambiguously
+    # real water, so scaling the floor there would wrongly zero it out. Past
+    # this cutoff the floor reverts to the flat 15g (see the note at the
+    # water delta check below).
+    WEIGHT_NOISE_RATE_APPLIES_UNDER_S = 3600.0  # 1 hour: "running" vs. "stale"
+    WEIGHT_NOISE_RATE_WINDOW_S = 120.0  # the "2 min" in "15g/2min"
+    WEIGHT_NOISE_RATE_G_PER_S = WEIGHT_NOISE_FLOOR_G / WEIGHT_NOISE_RATE_WINDOW_S
     ENERGY_WH_HEURISTIC_THRESHOLD_KWH = 20  # see the energy_consumed_kWh note below
 
     sorted_raw = sorted(raw, key=lambda r: r.get("timestamp", ""))
@@ -880,14 +893,23 @@ def _compute_hourly_aggregation_sync(
             continue
         hour_key = cur_ts[:13] + ":00:00Z"
 
-        # Water: a real jump is real regardless of how long it took to
-        # accumulate, so the noise floor (unlike the energy threshold below)
-        # does not need to scale with elapsed time. The upper-bound rate cap
-        # does, though — see WATER_RATE_CAP_G_PER_S above.
+        # Water: while the station is reporting normally (gap under
+        # WEIGHT_NOISE_RATE_APPLIES_UNDER_S), the noise floor is rate-scaled
+        # (15g/2min) on every step, however long that particular gap happens
+        # to be — a real small drip shouldn't get zeroed just for landing on
+        # a step that wasn't exactly 60s. Once the gap is stale-for-real (an
+        # actual outage), a real jump is real regardless of how long it took
+        # to accumulate — scaling the floor by elapsed time there would do
+        # the opposite of what we want, since a genuine multi-day
+        # accumulation has a tiny per-minute rate despite being unambiguously
+        # real water — so the floor reverts to the flat 15g. The upper-bound
+        # rate cap always scales with elapsed time regardless — see
+        # WATER_RATE_CAP_G_PER_S above.
         cur_w = cur_r.get("weight")
         if isinstance(cur_w, (int, float)):
             if last_valid_weight is not None and last_valid_weight_ts is not None:
                 delta_w = cur_w - last_valid_weight
+                elapsed_w_s = 60.0
                 if delta_w > 0:
                     try:
                         elapsed_w_s = max(
@@ -901,7 +923,11 @@ def _compute_hourly_aggregation_sync(
                         elapsed_w_s = 60.0
                     max_plausible_g = WATER_RATE_CAP_G_PER_S * elapsed_w_s
                     delta_w = min(delta_w, max_plausible_g)
-                if delta_w >= WEIGHT_NOISE_FLOOR_G:
+                if elapsed_w_s < WEIGHT_NOISE_RATE_APPLIES_UNDER_S:
+                    noise_floor_g = WEIGHT_NOISE_RATE_G_PER_S * elapsed_w_s
+                else:
+                    noise_floor_g = WEIGHT_NOISE_FLOOR_G
+                if delta_w >= noise_floor_g:
                     water_delta_by_hour[hour_key] += delta_w
                 if delta_w > 0:
                     captured_g_by_hour[hour_key] += delta_w
