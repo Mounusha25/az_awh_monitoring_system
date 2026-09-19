@@ -850,6 +850,12 @@ def _compute_hourly_aggregation_sync(
     WEIGHT_NOISE_RATE_WINDOW_S = 120.0  # the "2 min" in "15g/2min"
     WEIGHT_NOISE_RATE_G_PER_S = WEIGHT_NOISE_FLOOR_G / WEIGHT_NOISE_RATE_WINDOW_S
     ENERGY_WH_HEURISTIC_THRESHOLD_KWH = 20  # see the energy_consumed_kWh note below
+    # A real hour of operation draws on the order of 1kWh (these stations run
+    # ~1-1.5kW continuously); a bridged delta this small is more likely meter
+    # quantization/idle-draw noise than meaningful consumption, so it's
+    # excluded rather than plotted as if it were a real reading — same
+    # reasoning as the weight noise floor above, applied to energy instead.
+    ENERGY_NOISE_FLOOR_KWH = 0.1
 
     sorted_raw = sorted(raw, key=lambda r: r.get("timestamp", ""))
     water_delta_by_hour: dict[str, float] = defaultdict(float)
@@ -1104,7 +1110,7 @@ def _compute_hourly_aggregation_sync(
             span_hours = max(energy_span_hours_by_hour.get(hour_key, 0.0), 1.0)
             threshold_kwh = ENERGY_WH_HEURISTIC_THRESHOLD_KWH * span_hours
             energy_kwh = energy_delta / 1000.0 if energy_delta > threshold_kwh else energy_delta
-            row["energy_consumed_kWh"] = round(energy_kwh, 4)
+            row["energy_consumed_kWh"] = round(energy_kwh, 4) if energy_kwh > ENERGY_NOISE_FLOOR_KWH else None
         else:
             row["energy_consumed_kWh"] = None
 
