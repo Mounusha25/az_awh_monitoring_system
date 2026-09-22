@@ -163,44 +163,58 @@ az_awh_dashboard/
 
 ### ⚠️ Production / deployment repos — read before pushing anything
 
-The dashboard and the backend ship from **two different repos** — this was
-learned the hard way on 2026-09-09 (dashboard) and 2026-09-12 (backend), after
-each was initially assumed to share one deploy target and didn't.
+**As of 2026-09-22, `azawhasu-team/AzAWH-Project` is the main/canonical repo.**
+Every change — backend, dashboard, docs, anything — must be pushed there.
+Render's backend deploy is a separate, narrower exception layered on top of
+that (see below); it does not change the "push everything to the main repo"
+rule.
 
 - **Dashboard (Next.js, Vercel → `azawhdashboard.vercel.app`)** deploys **only**
   from `https://github.com/azawhasu-team/AzAWH-Project` (branch `main`). Do not
   push dashboard changes to `Mounusha25/az_awh_dashboard` expecting them to go
-  live — verified 2026-09-09 that they don't.
+  live — verified 2026-09-09 that they don't. Nothing reads from any
+  `Mounusha25/*` repo for the live dashboard.
 - **Backend (FastAPI, Render → `az-awh-monitoring-system.onrender.com`)**
-  deploys from `https://github.com/Mounusha25/az_awh_monitoring_system`
-  (branch `main`) — confirmed 2026-09-12 by pushing an `awh_az/backend/main.py`
-  change there and watching Render redeploy and expose the new endpoint within
-  seconds. This is a normal `git push origin main` from this local checkout,
-  no clone-diff-copy needed.
+  still deploys from `https://github.com/Mounusha25/az_awh_monitoring_system`
+  (branch `main`) as of 2026-09-22 — confirmed 2026-09-12 by pushing an
+  `awh_az/backend/main.py` change there and watching Render redeploy. Render
+  has **not** been repointed at `azawhasu-team/AzAWH-Project`. This is the one
+  place `Mounusha25/az_awh_monitoring_system` still matters operationally; for
+  everything else it is legacy and nothing reads from it.
 
-So: a backend-only change → push this repo directly. A dashboard-only change →
-use the `azawhasu-team/AzAWH-Project` procedure below. A change touching both
-needs both pushes. If unsure whether a push actually took effect, verify
-directly — curl the live backend's `/openapi.json` for the new path, or check
-the live dashboard — rather than assuming.
+**So the push rule is: every commit goes to `azawhasu-team/AzAWH-Project`
+(the main repo, required for all changes), and additionally to
+`Mounusha25/az_awh_monitoring_system` for backend/monitoring-system changes
+(required only so Render actually redeploys — that repo is otherwise not
+read by anything live).** A dashboard-only change still only needs the
+`azawhasu-team/AzAWH-Project` push. If unsure whether a push actually took
+effect, verify directly — curl the live backend's `/openapi.json` for the new
+path, or check the live dashboard — rather than assuming.
 
 This local checkout (`Mounusha25/az_awh_monitoring_system`, with
-`az_awh_dashboard` as a git submodule) remains the working copy for editing,
-and pushing it (for backend/monitoring-system changes) is how those reach
-production. `azawhasu-team/AzAWH-Project` is a separate **monorepo** with the
-same top-level layout as this repo, but the dashboard lives there as regular
-tracked files at `awh_az/water-station-dashboard/`, not a submodule — and its
-git history is unrelated/diverged from both `Mounusha25` repos (confirmed via
-`git merge-base`), so a normal `git push` into it isn't possible from either
-local checkout. To ship a **dashboard** change there:
+`az_awh_dashboard` as a git submodule) remains the working copy for editing.
+`azawhasu-team/AzAWH-Project` is a separate **monorepo** with the same
+top-level layout as this repo (confirmed: `awh_az/backend/` and
+`awh_az/water-station-dashboard/` both exist there), but its git history is
+unrelated/diverged from both `Mounusha25` repos (confirmed via
+`git merge-base`), so a normal `git push` into it isn't possible from this
+local checkout. To ship **any** change (backend or dashboard) there:
 
-1. Make/verify the change in this local checkout as normal.
+1. Make/verify the change in this local checkout as normal, and push it to
+   `Mounusha25/az_awh_monitoring_system` first if it's a backend change
+   (needed for Render).
 2. Clone `azawhasu-team/AzAWH-Project` fresh into a scratch directory.
-3. Diff the locally-changed dashboard files against that clone's copy at the
-   matching path (`awh_az/water-station-dashboard/...`) to find exactly what
-   changed — exclude `.env*`, `next-env.d.ts`, `*.tsbuildinfo`, `node_modules`,
-   `.next`.
+3. Diff the locally-changed files against that clone's copy at the matching
+   path (backend: `awh_az/backend/...`; dashboard:
+   `awh_az/water-station-dashboard/...`) to find exactly what changed —
+   exclude `.env*`, `next-env.d.ts`, `*.tsbuildinfo`, `node_modules`, `.next`.
 4. Copy just those files into the clone, `git add`/commit/push from there.
+
+Do this for **every** change now, not just dashboard ones — the old
+"backend-only changes just need `git push origin main` from this checkout"
+shortcut is no longer sufficient on its own; it still gets the Render deploy,
+but the change also needs to land in `azawhasu-team/AzAWH-Project` via the
+clone-diff-copy procedure above to be reflected in the main repo.
 
 ---
 

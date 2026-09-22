@@ -10,5 +10,7 @@ google-cloud-firestore==2.19.0
 google-cloud-storage==2.18.2
 pandas==2.2.3
 pyarrow==18.1.0
+scikit-learn==1.8.0
+joblib==1.5.3
 python-multipart==0.0.18
 aiofiles==24.1.0
