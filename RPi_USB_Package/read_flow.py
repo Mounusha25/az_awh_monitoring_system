@@ -55,7 +55,22 @@ class FlowMeterReader:
         self._thread.start()
 
     def stop(self):
+        """Stop the background polling thread and release the GPIO pin.
+
+        Waits for the background thread to fully exit, then closes the
+        gpiozero Button so its edge-detection callback is unregistered before
+        a restart claims the same pin again — otherwise a restart relies
+        entirely on _free_gpio_pin()'s force-free to avoid a "pin already in
+        use" error, and the old object's callback can keep firing into a
+        _pulse_count nobody is reading anymore.
+        """
         self._running = False
+        if self._thread and self._thread.is_alive():
+            self._thread.join(timeout=self.interval + 3)
+        try:
+            self.sensor.close()
+        except Exception:
+            pass
 
     def _run(self):
         last_count = 0

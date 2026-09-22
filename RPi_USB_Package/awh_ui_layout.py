@@ -12,7 +12,7 @@ class AWHControlPanel(tk.Tk):
         self.controller = controller
 
         self.title("AWH Station Control Panel")
-        self.geometry("900x780")
+        self.geometry("900x900")
         self.minsize(800, 660)
 
         self._build_layout()
@@ -99,6 +99,12 @@ class AWHControlPanel(tk.Tk):
         self.weight_threshold.config(state="readonly")
         self.pump_duration.config(state="readonly")
 
+        for lbl in self.param_labels.values():
+            caption = lbl.cget("text").split(":")[0]
+            lbl.config(text=f"{caption}: —")
+        for sensor, lbl in self.sensor_health_labels.items():
+            lbl.config(text=f"{sensor}: —", foreground="")
+
         self._update_button_states()
 
     def _build_layout(self):
@@ -134,6 +140,32 @@ class AWHControlPanel(tk.Tk):
         self.canvas.pack(side="left", fill="both", expand=True)
         scrollbar.pack(side="right", fill="y")
 
+        self._bind_mousewheel()
+
+    def _bind_mousewheel(self):
+        """Enable mouse-wheel / trackpad scrolling over the canvas (cross-platform)."""
+        def _on_wheel(event):
+            if event.num == 4:
+                self.canvas.yview_scroll(-1, "units")
+            elif event.num == 5:
+                self.canvas.yview_scroll(1, "units")
+            else:
+                delta = -1 if event.delta > 0 else 1
+                self.canvas.yview_scroll(delta, "units")
+
+        def _bind(_event):
+            self.canvas.bind_all("<MouseWheel>", _on_wheel)
+            self.canvas.bind_all("<Button-4>", _on_wheel)
+            self.canvas.bind_all("<Button-5>", _on_wheel)
+
+        def _unbind(_event):
+            self.canvas.unbind_all("<MouseWheel>")
+            self.canvas.unbind_all("<Button-4>")
+            self.canvas.unbind_all("<Button-5>")
+
+        self.canvas.bind("<Enter>", _bind)
+        self.canvas.bind("<Leave>", _unbind)
+
         # Centered content wrapper
         self.content = ttk.Frame(self.scrollable_frame)
         self.content.pack(fill="x", expand=True)
@@ -143,6 +175,7 @@ class AWHControlPanel(tk.Tk):
         self._build_configuration()
         self._build_controls()
         self._build_status()
+        self._build_live_parameters()
 
     def _build_header(self):
         """Build header section (visual only)."""
@@ -321,23 +354,144 @@ class AWHControlPanel(tk.Tk):
 
         ttk.Label(right, text="Sensor Health", font=("Helvetica", 12, "bold")).pack(anchor="w")
 
+        self.sensor_health_labels = {}
         for sensor in [
             "Balance", "Power", "Flow", "Intake Air", "Outtake Air"
         ]:
-            ttk.Label(right, text=f"{sensor}: ✔").pack(anchor="w")
+            lbl = ttk.Label(right, text=f"{sensor}: —")
+            lbl.pack(anchor="w")
+            self.sensor_health_labels[sensor] = lbl
+
+    def _build_live_parameters(self):
+        """Build live sensor parameter readout (Step 3, read-only)."""
+        live = ttk.LabelFrame(
+            self.content,
+            text="Live Parameters",
+            padding=10
+        )
+        live.pack(fill="x", padx=40, pady=10)
+
+        left = ttk.Frame(live)
+        left.grid(row=0, column=0, sticky="nw", padx=(0, 30))
+
+        right = ttk.Frame(live)
+        right.grid(row=0, column=1, sticky="nw")
+
+        ttk.Label(left, text="Intake Air", font=("Helvetica", 11, "bold")).pack(anchor="w")
+        ttk.Label(right, text="Outtake Air", font=("Helvetica", 11, "bold")).pack(anchor="w")
+
+        self.param_labels = {}
+        param_defs = [
+            (left, "intake_temp", "Temperature"),
+            (left, "intake_humidity", "Humidity"),
+            (left, "intake_velocity", "Velocity"),
+            (right, "outtake_temp", "Temperature"),
+            (right, "outtake_humidity", "Humidity"),
+            (right, "outtake_velocity", "Velocity"),
+        ]
+        for parent, key, caption in param_defs:
+            lbl = ttk.Label(parent, text=f"{caption}: —")
+            lbl.pack(anchor="w")
+            self.param_labels[key] = lbl
+
+        bottom = ttk.Frame(live)
+        bottom.grid(row=1, column=0, columnspan=2, sticky="w", pady=(10, 0))
+
+        ttk.Label(bottom, text="Power / Weight / Flow", font=("Helvetica", 11, "bold")).pack(anchor="w")
+        for key, caption in [
+            ("weight", "Balance Weight"),
+            ("voltage", "Voltage"),
+            ("power", "Power"),
+            ("energy", "Energy"),
+            ("flow_lmin", "Flow Rate"),
+        ]:
+            lbl = ttk.Label(bottom, text=f"{caption}: —")
+            lbl.pack(anchor="w")
+            self.param_labels[key] = lbl
+
+    @staticmethod
+    def _fmt(raw, unit=""):
+        """Format a raw string field, treating None/empty as missing."""
+        if raw is None or raw in ("", "None", "nan"):
+            return "—"
+        return f"{raw}{unit}"
 
     def update_status(self, data_str):
-        """Receive backend CSV-format row and refresh status labels."""
+        """Receive backend CSV-format row and refresh status labels.
+
+        Field layout matches the callback built in AquaPars1.py / AquaPars1_new_pm.py:
+        0 date, 1 time, 2 ST, 3 GS, 4 check, 5 weight, 6 unit, 7 pump_status,
+        8 V, 9 A, 10 W, 11 Wh, 12 op_time,
+        13 flow_lmin, 14 hz, 15 total_liters,
+        16 t_in, 17 v_in, 18 h_in, 19 v_unit_in,
+        20 t_out, 21 v_out, 22 h_out, 23 v_unit_out
+        """
         try:
             fields = data_str.split(",")
-            if len(fields) >= 13:
-                runtime = fields[12]
-                self.runtime_label.config(text=f"Runtime: {runtime}")
+            if len(fields) < 13:
+                return
 
-                cloud_text = "Cloud Upload: Active"
-                self.cloud_status_label.config(text=cloud_text)
+            runtime = fields[12]
+            self.runtime_label.config(text=f"Runtime: {runtime}")
+            self.cloud_status_label.config(text="Cloud Upload: Active")
+
+            if len(fields) < 24:
+                return
+
+            weight, unit = fields[5], fields[6]
+            V, A, W, Wh = fields[8], fields[9], fields[10], fields[11]
+            flow_lmin = fields[13]
+            t_in, v_in, h_in, v_unit_in = fields[16], fields[17], fields[18], fields[19]
+            t_out, v_out, h_out, v_unit_out = fields[20], fields[21], fields[22], fields[23]
+
+            self.param_labels["intake_temp"].config(text=f"Temperature: {self._fmt(t_in, ' C')}")
+            self.param_labels["intake_humidity"].config(text=f"Humidity: {self._fmt(h_in, ' %')}")
+            self.param_labels["intake_velocity"].config(
+                text=f"Velocity: {self._fmt(v_in, f' {v_unit_in}' if v_in not in (None, 'None') else '')}"
+            )
+
+            self.param_labels["outtake_temp"].config(text=f"Temperature: {self._fmt(t_out, ' C')}")
+            self.param_labels["outtake_humidity"].config(text=f"Humidity: {self._fmt(h_out, ' %')}")
+            self.param_labels["outtake_velocity"].config(
+                text=f"Velocity: {self._fmt(v_out, f' {v_unit_out}' if v_out not in (None, 'None') else '')}"
+            )
+
+            self.param_labels["weight"].config(
+                text=f"Balance Weight: {self._fmt(weight, f' {unit}' if weight not in (None, 'None') else '')}"
+            )
+            self.param_labels["voltage"].config(text=f"Voltage: {self._fmt(V, ' V')}")
+            self.param_labels["power"].config(text=f"Power: {self._fmt(W, ' W')}")
+            self.param_labels["energy"].config(text=f"Energy: {self._fmt(Wh, ' kWh')}")
+            self.param_labels["flow_lmin"].config(text=f"Flow Rate: {self._fmt(flow_lmin, ' L/min')}")
+
+            self._update_sensor_health(
+                balance_ok=weight not in (None, "", "None", "nan"),
+                power_ok=any(v not in (None, "", "None", "nan") for v in (V, A, W, Wh)),
+                flow_ok=flow_lmin not in (None, "", "None", "nan"),
+                intake_ok=any(v not in (None, "", "None", "nan") for v in (t_in, h_in, v_in)),
+                outtake_ok=any(v not in (None, "", "None", "nan") for v in (t_out, h_out, v_out)),
+            )
         except Exception:
             pass
+
+    def _update_sensor_health(self, balance_ok, power_ok, flow_ok, intake_ok, outtake_ok):
+        """Refresh the Sensor Health checkmarks based on whether each sensor's
+        latest fields are actually present (not None/stale placeholders)."""
+        status = {
+            "Balance": balance_ok,
+            "Power": power_ok,
+            "Flow": flow_ok,
+            "Intake Air": intake_ok,
+            "Outtake Air": outtake_ok,
+        }
+        for sensor, ok in status.items():
+            lbl = self.sensor_health_labels.get(sensor)
+            if lbl is None:
+                continue
+            if ok:
+                lbl.config(text=f"{sensor}: ✔", foreground="green")
+            else:
+                lbl.config(text=f"{sensor}: ✖", foreground="red")
 
     def update_pump_status(self, status):
         """Receive pump status callback from backend."""

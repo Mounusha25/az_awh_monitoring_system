@@ -93,7 +93,18 @@ class BalanceSerialReader:
         self._thread.start()
 
     def stop(self):
+        """Stop the background polling thread.
+
+        Waits for the background thread to fully exit before returning.
+        Without this, a caller (e.g. the watchdog's restart logic, or the UI's
+        Stop -> Start) can start a brand-new reader on the same port while the
+        old thread is still mid-read on it — two threads touching the same
+        serial device at once corrupts the exchange, which only cleared on a
+        full process restart rather than an in-process restart.
+        """
         self._running = False
+        if self._thread and self._thread.is_alive():
+            self._thread.join(timeout=self.timeout + 3)
         self._close()
 
     def _close(self):
