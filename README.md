@@ -3,7 +3,7 @@
 Full-stack monitoring platform for AWH stations deployed at ASU (SSEBE lab).
 Collects sensor data from physical hardware, stores it in PostgreSQL, and serves it via a REST API and dashboard.
 
-**Status:** Production — 1.4M+ sensor records across 8 active stations.
+**Status:** Production — 1.58M+ sensor records across 9 deployed stations (1 currently reporting live; historical data for all remains served).
 
 ---
 
