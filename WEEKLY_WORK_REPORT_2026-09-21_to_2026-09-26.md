@@ -1,6 +1,5 @@
 # AzAWH Weekly Work Report
 
-**Reporting period:** Monday, September 21 through Saturday, September 26, 2026  
 **Primary contributor:** Mounusha Ram Metti  
 **Project:** Arizona Atmospheric Water Harvesting Monitoring System
 
@@ -15,18 +14,9 @@ This week focused on four areas of the AzAWH platform:
 
 The week produced substantial, production-oriented progress across the edge-device, backend, ML, CI, and frontend layers rather than isolated UI changes.
 
-## Work completed by day
+## Work completed
 
-### Monday, September 21 — Planning and review
-
-- No committed repository activity was recorded.
-- Used as the baseline for the week’s implementation work.
-
-**Estimated effort:** 0 recorded hours
-
-### Tuesday, September 22 — Forecasting and Raspberry Pi reliability
-
-#### Water-production forecasting
+### Water-production forecasting
 
 - Added the backend `ml` package.
 - Built feature-generation and model-training workflows for water-production forecasting.
@@ -34,22 +24,20 @@ The week produced substantial, production-oriented progress across the edge-devi
 - Added the required scikit-learn and joblib dependencies.
 - Documented the dual-repository production push policy.
 
-#### Sensor-reader reliability
+### Sensor-reader reliability
 
 - Diagnosed a reader restart race affecting the balance, flow, and power readers.
 - Changed reader shutdown so the existing background thread is joined before a replacement reader starts.
 - Prevented two reader threads from accessing the same serial device simultaneously.
 - Eliminated the resulting periodic power-meter zero drops that previously required restarting the UI.
 
-#### Raspberry Pi operator interface
+### Raspberry Pi operator interface
 
 - Added a Live Parameters panel showing temperature, humidity, air velocity, balance weight, voltage, power, energy, and flow rate.
 - Connected sensor-health indicators to actual missing/available readings instead of fixed checkmarks.
 - Added mouse-wheel scrolling to the operator panel.
 
-**Estimated effort:** 4.5 hours
-
-### Wednesday, September 23 — Dashboard modernization
+### Dashboard modernization
 
 - Introduced Vitest and expanded automated coverage for reusable calculation and chart logic.
 - Migrated dashboard data fetching to TanStack Query for shared caching and clearer loading/error states.
@@ -61,22 +49,18 @@ The week produced substantial, production-oriented progress across the edge-devi
 - Added an application-level error page.
 - Cleaned up environment examples and corrected README setup instructions.
 
-**Estimated effort:** 3.5 hours
-
-### Thursday, September 24 — CI, units, navigation, and anomaly intelligence
-
-#### Delivery and quality controls
+### Delivery and quality controls
 
 - Added a GitHub Actions dashboard pipeline covering lint, TypeScript, tests, and production build.
 - Updated project statistics to reflect 1.58M+ records and nine deployed stations.
 
-#### Usability improvements
+### Usability improvements
 
 - Added liters, US gallons, and acre-feet selection to station pages.
 - Applied the selected unit consistently to dashboard values and CSV downloads.
 - Corrected the station-page Back button so it returns to `/stations`.
 
-#### Experimental anomaly visualization
+### Experimental anomaly visualization
 
 - Added a batch exporter that runs the saved Isolation Forest ensemble against recent station data.
 - Added safeguards for missing sensors, insufficient windows, and stations with an excessive flagged fraction.
@@ -87,20 +71,14 @@ The week produced substantial, production-oriented progress across the edge-devi
 - Added an experimental unusual-activity switch, event list, and numbered shaded chart bands.
 - Clearly labeled detections as unusual behavior rather than confirmed incidents.
 
-**Estimated effort:** 4.5 hours
-
-### Friday, September 25 — Runtime review and dashboard verification
+### Runtime review and dashboard verification
 
 - Ran and reviewed the dashboard across multiple sessions.
 - Checked chart rendering, station pages, and development-server behavior.
 - Investigated chart container-size warnings observed during runtime.
-- No new source commit was recorded; this was primarily validation and troubleshooting.
+- Focused this work on validation and troubleshooting.
 
-**Estimated effort:** 1.0 hour
-
-### Saturday, September 26 — Synchronized analysis and accurate station presence
-
-#### Synchronized chart zoom
+### Synchronized chart zoom
 
 - Lifted chart zoom into shared station-page state.
 - Made a zoom selection on any sensor or hourly graph apply to all graphs automatically.
@@ -109,7 +87,7 @@ The week produced substantial, production-oriented progress across the edge-devi
 - Reset zoom when the selected date period changes.
 - Changed zoomed Y-axes to use the visible data minimum and maximum instead of forcing the axis to begin at zero.
 
-#### Station Online/Offline behavior
+### Station Online/Offline behavior
 
 - Identified the cause of contradictory statuses: the backend retained `active` status for 48 hours while the UI could already say `Not sending`.
 - Replaced the 48-hour window with a 15-minute Online threshold.
@@ -121,29 +99,13 @@ The week produced substantial, production-oriented progress across the edge-devi
 - Applied the same rule to station cards, station counts, detail pages, the comparison page, admin/backend responses, and Online-first sorting.
 - Reduced the station-list backend cache from five minutes to 30 seconds so recovered stations appear promptly.
 
-#### Verification
+### Verification
 
 - Passed TypeScript checks.
 - Passed all 44 automated dashboard tests.
 - Passed ESLint with no errors; remaining warnings are pre-existing cleanup items.
 - Passed backend Python syntax validation.
 - Confirmed the local frontend and backend both return HTTP 200.
-
-**Estimated effort:** 2.0 hours
-
-## Estimated time summary
-
-| Day | Estimated hours |
-|---|---:|
-| Monday | 0.0 |
-| Tuesday | 4.5 |
-| Wednesday | 3.5 |
-| Thursday | 4.5 |
-| Friday | 1.0 |
-| Saturday | 2.0 |
-| **Total** | **15.5 hours** |
-
-The hour values are evidence-based estimates derived from commit timestamps, file activity, development-server activity, and the size of the completed work. Git is not a time-tracking system, so these values should be treated as a defensible project summary rather than an exact billing record. A reasonable overall range is **13–18 hours**.
 
 ## Key outcomes
 
