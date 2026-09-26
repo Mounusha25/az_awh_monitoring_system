@@ -94,6 +94,11 @@ DEFAULT_REGISTRY_STATIONS = [
     },
 ]
 
+# Allow short network or upload interruptions. A station becomes Offline only
+# after it has gone 15 minutes without delivering a reading.
+STATION_ONLINE_MAX_AGE_SECONDS = 15 * 60
+STATIONS_CACHE_TTL_SECONDS = 30
+
 
 def init_firestore():
     global db
@@ -348,7 +353,7 @@ async def get_stations():
                 last_dt = datetime.fromisoformat(last_ts_raw) if isinstance(last_ts_raw, str) else last_ts_raw
                 if last_dt.tzinfo is None:
                     last_dt = last_dt.replace(tzinfo=timezone.utc)
-                if (datetime.now(timezone.utc) - last_dt).total_seconds() / 3600 <= 48:
+                if (datetime.now(timezone.utc) - last_dt).total_seconds() < STATION_ONLINE_MAX_AGE_SECONDS:
                     station_status = "active"
             except Exception:
                 pass
@@ -374,7 +379,7 @@ async def get_stations():
 
     stations: list[StationInfo] = [s for s in results if s is not None]
 
-    cache.set(cache_key, [s.dict() for s in stations], ttl=300)
+    cache.set(cache_key, [s.dict() for s in stations], ttl=STATIONS_CACHE_TTL_SECONDS)
     return stations
 
 
@@ -1279,7 +1284,7 @@ async def get_stations_registry(
                     last_dt = datetime.fromisoformat(last_ts_raw) if isinstance(last_ts_raw, str) else last_ts_raw
                     if last_dt.tzinfo is None:
                         last_dt = last_dt.replace(tzinfo=timezone.utc)
-                    if (datetime.now(timezone.utc) - last_dt).total_seconds() / 3600 <= 48:
+                    if (datetime.now(timezone.utc) - last_dt).total_seconds() < STATION_ONLINE_MAX_AGE_SECONDS:
                         station_status = "ACTIVE"
                 except Exception:
                     pass
@@ -1447,7 +1452,7 @@ async def list_stations_admin(_: None = Depends(require_admin_key)):
                     last_dt = datetime.fromisoformat(last_reading) if isinstance(last_reading, str) else last_reading
                     if last_dt.tzinfo is None:
                         last_dt = last_dt.replace(tzinfo=timezone.utc)
-                    if (datetime.now(timezone.utc) - last_dt).total_seconds() / 3600 <= 48:
+                    if (datetime.now(timezone.utc) - last_dt).total_seconds() < STATION_ONLINE_MAX_AGE_SECONDS:
                         status = "active"
                 except Exception:
                     pass
