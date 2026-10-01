@@ -12,8 +12,12 @@ class AWHControlPanel(tk.Tk):
         self.controller = controller
 
         self.title("AWH Station Control Panel")
-        self.geometry("900x900")
-        self.minsize(800, 660)
+        # Fit the window to the screen so the bottom of the canvas is never
+        # pushed off-screen (small Pi displays); content scrolls inside it.
+        width = min(900, self.winfo_screenwidth())
+        height = min(900, max(400, self.winfo_screenheight() - 120))
+        self.geometry(f"{width}x{height}+0+0")
+        self.minsize(min(800, width), min(660, height))
 
         self._build_layout()
 
@@ -153,18 +157,12 @@ class AWHControlPanel(tk.Tk):
                 delta = -1 if event.delta > 0 else 1
                 self.canvas.yview_scroll(delta, "units")
 
-        def _bind(_event):
-            self.canvas.bind_all("<MouseWheel>", _on_wheel)
-            self.canvas.bind_all("<Button-4>", _on_wheel)
-            self.canvas.bind_all("<Button-5>", _on_wheel)
-
-        def _unbind(_event):
-            self.canvas.unbind_all("<MouseWheel>")
-            self.canvas.unbind_all("<Button-4>")
-            self.canvas.unbind_all("<Button-5>")
-
-        self.canvas.bind("<Enter>", _bind)
-        self.canvas.bind("<Leave>", _unbind)
+        # Bind app-wide (single-window app).
+        # (Canvas <Enter>/<Leave> also fire when moving onto child widgets,
+        # which used to unbind the wheel mid-scroll.)
+        self.bind_all("<MouseWheel>", _on_wheel)
+        self.bind_all("<Button-4>", _on_wheel)
+        self.bind_all("<Button-5>", _on_wheel)
 
         # Centered content wrapper
         self.content = ttk.Frame(self.scrollable_frame)
