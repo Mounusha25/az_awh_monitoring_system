@@ -23,7 +23,14 @@ point — progress is checkpointed after every batch.
 
 Usage:
     python3 compute_lifetime_totals.py
+    python3 compute_lifetime_totals.py --recompute --dry-run   # read-only: print old vs new, write nothing
+    python3 compute_lifetime_totals.py --recompute             # rebuild from scratch, overwriting the stored total (no deletes)
+
+Use --recompute (with MONITORED_STATIONS to limit it) after changing
+EXCLUDED_DATA_RANGES for a station that was already processed.
 """
+
+import sys
 
 import os
 from datetime import datetime, timezone
@@ -52,17 +59,27 @@ _monitored_raw = os.getenv("MONITORED_STATIONS", "")
 MONITORED_STATIONS = {s.strip() for s in _monitored_raw.split(",") if s.strip()} or None
 
 
-def process_station(db, station_name: str) -> None:
+def process_station(db, station_name: str, recompute: bool = False, dry_run: bool = False) -> None:
     station_ref = db.collection("stations").document(station_name)
     agg_ref = station_ref.collection("aggregates").document("lifetime_totals")
     agg_doc = agg_ref.get()
-    state = agg_doc.to_dict() if agg_doc.exists else {}
+    old_state = agg_doc.to_dict() if agg_doc.exists else {}
+    state = {} if recompute else old_state
 
     total_g = state.get("total_water_g", 0.0)
     last_weight = state.get("last_weight_g")
     last_ts_str = state.get("last_timestamp")
     readings_processed = state.get("readings_processed", 0)
     new_docs_seen = 0
+
+    def write_state():
+        agg_ref.set({
+            "total_water_g": total_g,
+            "last_weight_g": last_weight,
+            "last_timestamp": last_ts_str,
+            "readings_processed": readings_processed,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        })
 
     while True:
         query = (
@@ -97,16 +114,24 @@ def process_station(db, station_name: str) -> None:
 
         new_docs_seen += len(batch)
 
-        agg_ref.set({
-            "total_water_g": total_g,
-            "last_weight_g": last_weight,
-            "last_timestamp": last_ts_str,
-            "readings_processed": readings_processed,
-            "updated_at": datetime.now(timezone.utc).isoformat(),
-        })
+        # A recompute only writes once, at the end — checkpointing mid-run
+        # would briefly overwrite the live total with a partial sum.
+        if not recompute and not dry_run:
+            write_state()
 
         if len(batch) < BATCH_SIZE:
             break
+
+    if recompute:
+        old_l = old_state.get("total_water_g", 0.0) / 1000
+        print(f"{station_name}: recompute {old_l:.2f} L -> {total_g / 1000:.2f} L "
+              f"({old_state.get('readings_processed', 0)} -> {readings_processed} readings)")
+        if dry_run:
+            print("  dry run: nothing written")
+        else:
+            write_state()
+            print("  overwrote stored total")
+        return
 
     if new_docs_seen:
         print(f"{station_name}: +{new_docs_seen} new readings processed, "
@@ -123,7 +148,7 @@ def main() -> None:
     for sdoc in db.collection("stations").list_documents():
         if MONITORED_STATIONS is not None and sdoc.id not in MONITORED_STATIONS:
             continue
-        process_station(db, sdoc.id)
+        process_station(db, sdoc.id, recompute="--recompute" in sys.argv, dry_run="--dry-run" in sys.argv)
 
 
 if __name__ == "__main__":
