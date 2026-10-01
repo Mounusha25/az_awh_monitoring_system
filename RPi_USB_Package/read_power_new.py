@@ -66,7 +66,10 @@ class PowerMeterReader:
                       DEM730P via RS485 only exposes energy -> (None, None, None, energy_kwh)
             timeout: Serial timeout in seconds (default: 2)
         """
-        self.port = port or PORT or find_power_meter_port()
+        # Resolve at construction time, not from the import-time PORT constant:
+        # after a replug/converter swap the by-id path can change, and a stale
+        # module-level value would make every watchdog restart fail.
+        self.port = port or find_power_meter_port()
         if not self.port or not os.path.exists(self.port):
             raise RuntimeError(
                 "[Power] FTDI power meter adapter not found under /dev/serial/by-id — "
@@ -80,12 +83,14 @@ class PowerMeterReader:
         self._instrument = None
         self._running = False
         self._thread = None
+        self._stop_event = threading.Event()
 
     def start(self):
         """Start the background polling thread."""
         if self._running:
             return
         self._running = True
+        self._stop_event.clear()
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
         print(f"[Power] Started polling on {self.port}")
@@ -103,6 +108,7 @@ class PowerMeterReader:
         in-process restart (no such guarantee).
         """
         self._running = False
+        self._stop_event.set()  # wakes the poll/backoff sleep immediately
         if self._thread and self._thread.is_alive():
             self._thread.join(timeout=self.timeout + 3)
         try:
@@ -124,23 +130,23 @@ class PowerMeterReader:
             inst.serial.timeout  = self.timeout
             inst.mode            = minimalmodbus.MODE_RTU
 
-            # Enable RS485 half-duplex RTS direction control.
-            # Some USB-RS485 adapters need RTS toggled to switch between
-            # transmit and receive. Without this, the adapter keeps its
-            # transmitter on after sending, blocking the meter's response.
-            try:
-                import serial.rs485
-                inst.serial.rs485_mode = serial.rs485.RS485Settings(
-                    rts_level_for_tx=True,
-                    rts_level_for_rx=False,
-                    loopback=False,
-                    delay_before_tx=0.0,
-                    delay_before_rx=0.0,
-                )
-                print("[Power] RS485 RTS direction control enabled")
-            except Exception:
-                # Adapter handles direction automatically — no action needed
-                print("[Power] RS485 RTS mode not supported by this adapter (auto-direction)")
+            # RTS-based RS485 direction control is opt-in (AWH_RS485_RTS=1).
+            # The Waveshare USB-RS485 converter switches direction in hardware,
+            # and setting rs485_mode on an FTDI port issues a TIOCSRS485 ioctl the
+            # driver rejects — which can leave the port half-configured.
+            if os.environ.get("AWH_RS485_RTS") == "1":
+                try:
+                    import serial.rs485
+                    inst.serial.rs485_mode = serial.rs485.RS485Settings(
+                        rts_level_for_tx=True,
+                        rts_level_for_rx=False,
+                        loopback=False,
+                        delay_before_tx=0.0,
+                        delay_before_rx=0.0,
+                    )
+                    print("[Power] RS485 RTS direction control enabled")
+                except Exception as e:
+                    print(f"[Power] RS485 RTS mode unavailable: {e}")
 
             print(f"[Power] Connected to {self.port} @ {self.baudrate} baud, address {self.address}")
             return inst
@@ -155,7 +161,7 @@ class PowerMeterReader:
                 if self._instrument is None:
                     self._instrument = self._connect()
                     if self._instrument is None:
-                        time.sleep(2)  # backoff before retry
+                        self._stop_event.wait(2)  # backoff before retry
                         continue
 
                 # Read total energy from register 0x0000 (single 16-bit word, function code 3).
@@ -189,10 +195,10 @@ class PowerMeterReader:
                 self._instrument = None
                 if not self._running:
                     break  # stop() was called — exit immediately, don't retry
-                time.sleep(2)
+                self._stop_event.wait(2)
                 continue
 
-            time.sleep(self.interval)
+            self._stop_event.wait(self.interval)
 
         # cleanup on exit
         try:

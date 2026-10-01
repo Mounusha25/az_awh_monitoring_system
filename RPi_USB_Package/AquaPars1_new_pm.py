@@ -130,6 +130,9 @@ class StationController:
             print("[Watchdog] Power reader started.")
         except Exception as e:
             print(f"[Watchdog] Failed to start power reader: {e}")
+            # Reset the staleness clock so the watchdog retries every
+            # READER_STALE_SEC instead of every poll.
+            self._last_power_ts = time.time()
 
     def _start_flow_reader(self):
         try:
@@ -150,9 +153,13 @@ class StationController:
                 print("[Watchdog] Balance reader stopped.")
                 self._start_balance_reader()
 
-            elif which == "power" and self.power_reader:
-                try: self.power_reader.stop()
-                except: pass
+            elif which == "power":
+                # No `and self.power_reader` guard: if the first start failed
+                # (adapter missing at boot) power_reader is None, and the
+                # watchdog must still be able to retry.
+                if self.power_reader:
+                    try: self.power_reader.stop()
+                    except: pass
                 self.power_reader = None
                 print("[Watchdog] Power reader stopped.")
                 self._start_power_reader()
