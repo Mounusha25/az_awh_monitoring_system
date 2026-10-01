@@ -107,6 +107,39 @@ EXCLUDED_DATA_RANGES: dict[str, list[tuple[str, str]]] = {
 }
 
 
+def _excluded_windows(station_name: str) -> list[tuple[datetime, datetime]]:
+    """EXCLUDED_DATA_RANGES for a station as UTC datetimes, [start, end)."""
+    return [
+        (datetime.fromisoformat(lo).replace(tzinfo=timezone.utc),
+         datetime.fromisoformat(hi).replace(tzinfo=timezone.utc))
+        for lo, hi in EXCLUDED_DATA_RANGES.get(station_name, [])
+    ]
+
+
+def _is_excluded_ts(station_name: str, ts) -> bool:
+    """True if a reading timestamp (ISO string) is inside an excluded window."""
+    ranges = EXCLUDED_DATA_RANGES.get(station_name)
+    return bool(ranges) and isinstance(ts, str) and any(lo <= ts[:19] < hi for lo, hi in ranges)
+
+
+def _split_range_around_windows(start, end, windows):
+    """Split [start, end] (None = open) into ascending (start, end, end_inclusive)
+    segments that skip every excluded window."""
+    segs = [(start, end, True)]
+    for wlo, whi in windows:
+        nxt = []
+        for s_, e_, incl in segs:
+            if (e_ is not None and e_ < wlo) or (s_ is not None and s_ >= whi):
+                nxt.append((s_, e_, incl))
+                continue
+            if s_ is None or s_ < wlo:
+                nxt.append((s_, wlo, False))
+            if e_ is None or e_ >= whi:
+                nxt.append((whi, e_, incl))
+        segs = nxt
+    return segs
+
+
 def init_firestore():
     global db
     # Option 1: Base64-encoded JSON in env var (for Render / cloud deploys)
@@ -430,6 +463,10 @@ def _fetch_readings_rows(
     if end_date:
         conditions.append("time <= %(end_date)s")
         params["end_date"] = end_date
+    for i, (wlo, whi) in enumerate(_excluded_windows(station_name)):
+        conditions.append(f"NOT (time >= %(ex_lo_{i})s AND time < %(ex_hi_{i})s)")
+        params[f"ex_lo_{i}"] = wlo
+        params[f"ex_hi_{i}"] = whi
 
     query = f"""
         SELECT time, {", ".join(READING_COLUMNS)}
@@ -472,6 +509,36 @@ def _fetch_readings_docs_firestore(readings_ref, offset: int, limit: int):
 # ---------------------------------------------------------------------------
 # Station readings
 # ---------------------------------------------------------------------------
+def _fetch_readings_docs_firestore_excluding(
+    station_name: str, start_date, end_date, ascending: bool, offset: int, limit: int, windows,
+):
+    """Firestore fetch that skips the station's excluded windows. Fills the page
+    from the segments on either side of a window, so a page only comes back
+    short at the real end of the data — the client's cursor pagination treats
+    a short page as 'last page'."""
+    segs = _split_range_around_windows(start_date, end_date, windows)
+    if not ascending:
+        segs.reverse()
+    want = offset + limit
+    docs: list = []
+    for s_, e_, incl in segs:
+        ref = (
+            db.collection(settings.firestore_collection)
+            .document(station_name)
+            .collection("readings")
+            .order_by("timestamp", direction=firestore.Query.ASCENDING if ascending else firestore.Query.DESCENDING)
+        )
+        if s_ is not None:
+            ref = ref.where("timestamp", ">=", s_)
+        if e_ is not None:
+            ref = ref.where("timestamp", "<=" if incl else "<", e_)
+        docs.extend(ref.limit(want - len(docs)).stream())
+        if len(docs) >= want:
+            break
+    docs = docs[offset:offset + limit]
+    return docs or None
+
+
 @app.get("/stations/{station_name}/readings", response_model=ReadingsResponse, tags=["Readings"])
 async def get_station_readings(
     station_name: str,
@@ -540,7 +607,14 @@ async def get_station_readings(
             readings_ref = readings_ref.where("timestamp", ">=", start_date)
         if end_date:
             readings_ref = readings_ref.where("timestamp", "<=", end_date)
-        docs = await run_in_threadpool(_fetch_readings_docs_firestore, readings_ref, offset, limit)
+        windows = _excluded_windows(station_name)
+        if windows:
+            docs = await run_in_threadpool(
+                _fetch_readings_docs_firestore_excluding,
+                station_name, start_date, end_date, ascending, offset, limit, windows,
+            )
+        else:
+            docs = await run_in_threadpool(_fetch_readings_docs_firestore, readings_ref, offset, limit)
         rows = [_firestore_doc_to_dict(d.to_dict()) for d in docs] if docs else None
 
     if not rows:
@@ -625,6 +699,8 @@ def _fetch_station_export_rows(
             break
         for rdoc in batch:
             data = _firestore_doc_to_dict(rdoc.to_dict())
+            if _is_excluded_ts(sname, data.get("timestamp")):
+                continue
             if fields:
                 data = {k: v for k, v in data.items() if k in fields or k in ("station_name", "timestamp")}
             rows.append(data)

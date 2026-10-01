@@ -38,6 +38,16 @@ FIREBASE_CREDENTIALS_PATH = os.getenv(
 WEIGHT_NOISE_FLOOR_G = 15  # must match awh_az/backend/main.py's hourly aggregation
 BATCH_SIZE = 2000
 
+# Readings in these [start, end) UTC windows are not counted — keep in sync
+# with EXCLUDED_DATA_RANGES in awh_az/backend/main.py. The stored total is a
+# running sum, so changing this for a station that was already processed means
+# deleting its stations/{name}/aggregates/lifetime_totals doc and re-running.
+EXCLUDED_DATA_RANGES = {
+    "station_testbed_1@Powerplant": [
+        (datetime(2026, 8, 8, tzinfo=timezone.utc), datetime(2026, 9, 11, tzinfo=timezone.utc)),
+    ],
+}
+
 _monitored_raw = os.getenv("MONITORED_STATIONS", "")
 MONITORED_STATIONS = {s.strip() for s in _monitored_raw.split(",") if s.strip()} or None
 
@@ -73,6 +83,9 @@ def process_station(db, station_name: str) -> None:
             ts = data.get("timestamp")
             if ts is not None:
                 last_ts_str = ts.isoformat()
+                if any(lo <= ts < hi for lo, hi in EXCLUDED_DATA_RANGES.get(station_name, [])):
+                    last_weight = None  # don't bridge a delta across the excluded window
+                    continue
                 readings_processed += 1
             if weight is None or ts is None:
                 continue
