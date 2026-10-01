@@ -155,7 +155,7 @@ For hourly efficiency, think of it as a report-card score for the entire hour, n
 - $\Delta W_i$: incremental produced water (g)
 - $AH_i$: absolute humidity (g/m^3)
 - $v_{\text{m/s},i}$: intake air velocity normalized to m/s
-- $A$: duct area (0.18 m^2)
+- $A$: intake area (m^2) — set per station on the admin page (`intake_area_m2`); defaults to 0.18 m^2 when unset
 - $\Delta t_i$: interval in seconds (capped at 120 s)
 - $W_{\text{intake},i}$: theoretical water in incoming air (g)
 - $\eta_i$: harvesting efficiency (%)

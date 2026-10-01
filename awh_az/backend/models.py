@@ -82,6 +82,9 @@ class StationInfo(BaseModel):
     image_url: Optional[str] = None
     hidden: bool = False
     expected_production_g_per_min: Optional[float] = None
+    # Intake cross-section (m²); drives the theoretical-intake side of harvesting
+    # efficiency. None → default duct area (0.18 m²).
+    intake_area_m2: Optional[float] = None
 
 
 class StationAdminUpdate(BaseModel):
@@ -92,6 +95,9 @@ class StationAdminUpdate(BaseModel):
     image_url: Optional[str] = None
     hidden: Optional[bool] = None
     expected_production_g_per_min: Optional[float] = None
+    # Intake cross-section (m²); drives the theoretical-intake side of harvesting
+    # efficiency. None → default duct area (0.18 m²).
+    intake_area_m2: Optional[float] = Field(None, gt=0)
 
 
 class AdminCreateStationRequest(BaseModel):
@@ -103,6 +109,9 @@ class AdminCreateStationRequest(BaseModel):
     description: Optional[str] = None
     location: Optional[str] = None
     expected_production_g_per_min: Optional[float] = None
+    # Intake cross-section (m²); drives the theoretical-intake side of harvesting
+    # efficiency. None → default duct area (0.18 m²).
+    intake_area_m2: Optional[float] = None
 
 
 class AdminStationListItem(BaseModel):
@@ -126,6 +135,9 @@ class AdminStationListItem(BaseModel):
     # (not exclude) hours that exceed 3x this rate as implausible glitches —
     # only the excess above the cap is dropped, not the whole hour.
     expected_production_g_per_min: Optional[float] = None
+    # Intake cross-section (m²); drives the theoretical-intake side of harvesting
+    # efficiency. None → default duct area (0.18 m²).
+    intake_area_m2: Optional[float] = None
 
 
 class DeleteStationResponse(BaseModel):

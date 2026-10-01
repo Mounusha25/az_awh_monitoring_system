@@ -378,6 +378,7 @@ async def get_stations():
             image_url=station_doc_data.get("image_url"),
             hidden=bool(station_doc_data.get("hidden", False)),
             expected_production_g_per_min=station_doc_data.get("expected_production_g_per_min"),
+            intake_area_m2=station_doc_data.get("intake_area_m2"),
         )
 
     # Fetch all stations in parallel — eliminates N sequential Firestore round-trips
@@ -889,6 +890,21 @@ def _compute_hourly_aggregation_sync(
     # reasoning as the weight noise floor above, applied to energy instead.
     ENERGY_NOISE_FLOOR_KWH = 0.1
 
+    # Station metadata (Firestore is the source of truth for it regardless of
+    # whether readings came from Postgres or Firestore). Fetched before the
+    # delta loop because the admin-set intake area feeds the theoretical-
+    # intake side of harvesting efficiency; unset/invalid → default duct area.
+    station_doc_data: dict = {}
+    if db:
+        try:
+            station_doc_data = (
+                db.collection(settings.firestore_collection).document(station_name).get().to_dict() or {}
+            )
+        except Exception:
+            station_doc_data = {}
+    raw_area = station_doc_data.get("intake_area_m2")
+    intake_area_m2 = raw_area if isinstance(raw_area, (int, float)) and raw_area > 0 else AWH_DUCT_AREA_M2
+
     sorted_raw = sorted(raw, key=lambda r: r.get("timestamp", ""))
     water_delta_by_hour: dict[str, float] = defaultdict(float)
     energy_raw_delta_by_hour: dict[str, float] = defaultdict(float)
@@ -1028,27 +1044,18 @@ def _compute_hourly_aggregation_sync(
             vel_mps = _velocity_to_mps(v, unit if isinstance(unit, str) else None)
             if abs_h > 0 and vel_mps > 0:
                 dt_s = min(elapsed_s, 120.0)
-                intake_g_by_hour[hour_key] += abs_h * vel_mps * AWH_DUCT_AREA_M2 * dt_s
+                intake_g_by_hour[hour_key] += abs_h * vel_mps * intake_area_m2 * dt_s
 
     # Admin-entered expected production rate (g/min) for this station, if
     # any — used below to exclude implausibly-high hourly water totals from
     # calculations/graphs rather than let a hardware glitch (e.g. a balance
-    # reset that reads as a huge one-step gain) inflate them. Firestore is
-    # the source of truth for this station-metadata field regardless of
-    # whether readings themselves came from Postgres or Firestore above (see
-    # the /stations endpoint, which reads it the same way). None (not set,
-    # or Firestore unavailable) means: no exclusion — leave water_produced_g
-    # exactly as computed above.
+    # reset that reads as a huge one-step gain) inflate them. Read from the
+    # station doc fetched above; None (not set, or Firestore unavailable)
+    # means: no exclusion — leave water_produced_g exactly as computed above.
     expected_g_per_min: Optional[float] = None
-    if db:
-        try:
-            station_doc = db.collection(settings.firestore_collection).document(station_name).get()
-            station_doc_data = station_doc.to_dict() or {}
-            raw_expected = station_doc_data.get("expected_production_g_per_min")
-            if isinstance(raw_expected, (int, float)):
-                expected_g_per_min = raw_expected
-        except Exception:
-            expected_g_per_min = None
+    raw_expected = station_doc_data.get("expected_production_g_per_min")
+    if isinstance(raw_expected, (int, float)):
+        expected_g_per_min = raw_expected
 
     hourly_rows = []
     sorted_hours = sorted(buckets.keys())
@@ -1407,6 +1414,9 @@ async def update_station_admin_fields(
     # merge=True creates the doc with just these fields when that's the case.
     stations_ref.document(station_name).set(updates, merge=True)
     cache.delete(get_stations_cache_key())
+    if "intake_area_m2" in updates:
+        # Cached hourly efficiency was computed with the old intake area.
+        invalidate_station_cache(station_name)
     return {"station_name": station_name, "updated": updates}
 
 
@@ -1499,6 +1509,7 @@ async def list_stations_admin(_: None = Depends(require_admin_key)):
             total_readings=len(reading_docs),
             last_reading=last_reading,
             expected_production_g_per_min=doc_data.get("expected_production_g_per_min"),
+            intake_area_m2=doc_data.get("intake_area_m2"),
         )
 
     with ThreadPoolExecutor(max_workers=min(len(station_docs), 16) or 1) as executor:
@@ -1544,6 +1555,8 @@ async def create_station_admin(
         doc_fields["description"] = payload.description
     if payload.expected_production_g_per_min is not None:
         doc_fields["expected_production_g_per_min"] = payload.expected_production_g_per_min
+    if payload.intake_area_m2 is not None:
+        doc_fields["intake_area_m2"] = payload.intake_area_m2
 
     stations_ref.document(station_name).set(doc_fields)
     cache.delete(get_stations_cache_key())
@@ -1558,6 +1571,7 @@ async def create_station_admin(
         status="pending",
         total_readings=0,
         expected_production_g_per_min=payload.expected_production_g_per_min,
+        intake_area_m2=payload.intake_area_m2,
         last_reading=None,
     )
 
