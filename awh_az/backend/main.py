@@ -841,7 +841,7 @@ def _compute_hourly_aggregation_sync(
     # being smoothed across the gap (there's no way to know when within the
     # gap it happened), but it is no longer silently discarded.
     WEIGHT_NOISE_FLOOR_G = 15  # see the water_produced_g note below for why
-    # The rate-based check (15g/2min == 7.5g/min) applies to every step while
+    # The rate-based check (15g/30s == 30g/min) applies to every step while
     # the station is reporting normally, no matter the exact gap — a delayed
     # reading 5 or 20 minutes later is still "running," just slow to check
     # in, and jitter shouldn't get a free pass just because the gap wasn't
@@ -852,7 +852,7 @@ def _compute_hourly_aggregation_sync(
     # this cutoff the floor reverts to the flat 15g (see the note at the
     # water delta check below).
     WEIGHT_NOISE_RATE_APPLIES_UNDER_S = 3600.0  # 1 hour: "running" vs. "stale"
-    WEIGHT_NOISE_RATE_WINDOW_S = 120.0  # the "2 min" in "15g/2min"
+    WEIGHT_NOISE_RATE_WINDOW_S = 30.0  # the "30s" in "15g/30s"
     WEIGHT_NOISE_RATE_G_PER_S = WEIGHT_NOISE_FLOOR_G / WEIGHT_NOISE_RATE_WINDOW_S
     ENERGY_WH_HEURISTIC_THRESHOLD_KWH = 20  # see the energy_consumed_kWh note below
     # A real hour of operation draws on the order of 1kWh (these stations run
@@ -906,7 +906,7 @@ def _compute_hourly_aggregation_sync(
 
         # Water: while the station is reporting normally (gap under
         # WEIGHT_NOISE_RATE_APPLIES_UNDER_S), the noise floor is rate-scaled
-        # (15g/2min) on every step, however long that particular gap happens
+        # (15g/30s) on every step, however long that particular gap happens
         # to be — a real small drip shouldn't get zeroed just for landing on
         # a step that wasn't exactly 60s. Once the gap is stale-for-real (an
         # actual outage), a real jump is real regardless of how long it took
