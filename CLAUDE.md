@@ -210,6 +210,12 @@ local checkout. To ship **any** change (backend or dashboard) there:
    exclude `.env*`, `next-env.d.ts`, `*.tsbuildinfo`, `node_modules`, `.next`.
 4. Copy just those files into the clone, `git add`/commit/push from there.
 
+**Automated:** `python scripts/push_to_main_repo.py` performs steps 2-4 as a dry
+run (clones, diffs, lists what would change; excludes secrets/`.env*`/build
+output; never deletes). Add `--apply -m "message"` to commit and push (it asks
+for confirmation first). Backend changes still need the separate push to
+`Mounusha25/az_awh_monitoring_system` for Render.
+
 Do this for **every** change now, not just dashboard ones — the old
 "backend-only changes just need `git push origin main` from this checkout"
 shortcut is no longer sufficient on its own; it still gets the Render deploy,

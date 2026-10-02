@@ -1,0 +1,43 @@
+name: Backend CI
+
+on:
+  push:
+    paths:
+      - 'awh_az/backend/**'
+      - 'ingestion_worker.py'
+      - 'test_ingestion_worker.py'
+      - 'scripts/**'
+      - '.github/workflows/backend-ci.yml'
+  pull_request:
+    paths:
+      - 'awh_az/backend/**'
+      - 'ingestion_worker.py'
+      - 'test_ingestion_worker.py'
+      - 'scripts/**'
+      - '.github/workflows/backend-ci.yml'
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'   # matches awh_az/backend/Dockerfile
+          cache: pip
+          cache-dependency-path: awh_az/backend/requirements.txt
+      # The ingestion worker's imports (firebase-admin, psycopg2, dotenv) are
+      # all covered by the backend requirements, so one install serves both.
+      - run: pip install -r awh_az/backend/requirements.txt pytest httpx ruff   # httpx: FastAPI TestClient
+      # Syntax errors and undefined names only — catches real breakage without
+      # failing on style the codebase hasn't adopted.
+      - run: ruff check --select E9,F63,F7,F82 awh_az/backend scripts ingestion_worker.py test_ingestion_worker.py --exclude awh_az/backend/venv
+      - run: python -m compileall -q awh_az/backend/main.py awh_az/backend/models.py awh_az/backend/config.py awh_az/backend/cache.py awh_az/backend/datadownload.py ingestion_worker.py
+      - run: python -m pytest test_ingestion_worker.py awh_az/backend/tests scripts -v
+
+  # Render builds this same Dockerfile; failing here is cheaper than failing there.
+  docker-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build -t awh-backend awh_az/backend
