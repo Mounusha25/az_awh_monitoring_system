@@ -23,11 +23,9 @@
   station, alerting on any mismatch. Automates the manual August recovery check.
 
 ### 1.2 Collapse the deploy process
-- Currently: push to `azawhasu-team/AzAWH-Project` and also to
-  `Mounusha25/az_awh_monitoring_system` (for Render), with unrelated git histories
-  and a clone-diff-copy procedure. This is the largest source of human error.
-- Make `azawhasu-team/AzAWH-Project` the only repo; repoint Render at it (or move
-  the backend to Cloud Run).
+- DONE 2026-10-02: Render now deploys from `azawhasu-team/AzAWH-Project`, so one
+  push ships both services. Push is automated by `scripts/push_to_main_repo.py`.
+  (Previously a second push to `Mounusha25/az_awh_monitoring_system` was needed.)
 - Add CI (GitHub Actions): lint, type-check, tests, preview deploy per PR.
 - Add infrastructure as code (Terraform) so the GCP project, billing and Firebase
   setup are reproducible.

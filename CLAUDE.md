@@ -163,46 +163,37 @@ az_awh_dashboard/
 
 ### ⚠️ Production / deployment repos — read before pushing anything
 
-**As of 2026-09-22, `azawhasu-team/AzAWH-Project` is the main/canonical repo.**
-Every change — backend, dashboard, docs, anything — must be pushed there.
-Render's backend deploy is a separate, narrower exception layered on top of
-that (see below); it does not change the "push everything to the main repo"
-rule.
+**`azawhasu-team/AzAWH-Project` is the single main/canonical repo.** Every change
+(backend, dashboard, docs, anything) is pushed there, and both live services
+deploy from it:
 
-- **Dashboard (Next.js, Vercel → `azawhdashboard.vercel.app`)** deploys **only**
-  from `https://github.com/azawhasu-team/AzAWH-Project` (branch `main`). Do not
-  push dashboard changes to `Mounusha25/az_awh_dashboard` expecting them to go
-  live — verified 2026-09-09 that they don't. Nothing reads from any
-  `Mounusha25/*` repo for the live dashboard.
+- **Dashboard (Next.js, Vercel → `azawhdashboard.vercel.app`)** deploys from
+  `https://github.com/azawhasu-team/AzAWH-Project` (branch `main`).
 - **Backend (FastAPI, Render → `az-awh-monitoring-system.onrender.com`)**
-  still deploys from `https://github.com/Mounusha25/az_awh_monitoring_system`
-  (branch `main`) as of 2026-09-22 — confirmed 2026-09-12 by pushing an
-  `awh_az/backend/main.py` change there and watching Render redeploy. Render
-  has **not** been repointed at `azawhasu-team/AzAWH-Project`. This is the one
-  place `Mounusha25/az_awh_monitoring_system` still matters operationally; for
-  everything else it is legacy and nothing reads from it.
+  deploys from the same repo and branch. Repointed from
+  `Mounusha25/az_awh_monitoring_system` on 2026-10-02. Render service settings:
+  Root Directory `awh_az/backend`, Python runtime (not the Dockerfile), Build
+  `pip install -r requirements.txt`, Start
+  `uvicorn main:app --host 0.0.0.0 --port $PORT`, env var `PYTHON_VERSION`
+  pinned to 3.13.x (Render defaults to 3.14, which has no wheels for the pinned
+  pandas/pydantic-core and fails to build). Auto-deploy on commit; only
+  changes under `awh_az/backend` redeploy it.
 
-**So the push rule is: every commit goes to `azawhasu-team/AzAWH-Project`
-(the main repo, required for all changes), and additionally to
-`Mounusha25/az_awh_monitoring_system` for backend/monitoring-system changes
-(required only so Render actually redeploys — that repo is otherwise not
-read by anything live).** A dashboard-only change still only needs the
-`azawhasu-team/AzAWH-Project` push. If unsure whether a push actually took
+Nothing live reads from any `Mounusha25/*` repo anymore. **The push rule is now
+one push: to `azawhasu-team/AzAWH-Project`.** If unsure whether a push took
 effect, verify directly — curl the live backend's `/openapi.json` for the new
 path, or check the live dashboard — rather than assuming.
 
 This local checkout (`Mounusha25/az_awh_monitoring_system`, with
 `az_awh_dashboard` as a git submodule) remains the working copy for editing.
 `azawhasu-team/AzAWH-Project` is a separate **monorepo** with the same
-top-level layout as this repo (confirmed: `awh_az/backend/` and
+top-level layout as this repo (`awh_az/backend/` and
 `awh_az/water-station-dashboard/` both exist there), but its git history is
 unrelated/diverged from both `Mounusha25` repos (confirmed via
 `git merge-base`), so a normal `git push` into it isn't possible from this
-local checkout. To ship **any** change (backend or dashboard) there:
+local checkout. To ship **any** change there:
 
-1. Make/verify the change in this local checkout as normal, and push it to
-   `Mounusha25/az_awh_monitoring_system` first if it's a backend change
-   (needed for Render).
+1. Make/verify the change in this local checkout as normal.
 2. Clone `azawhasu-team/AzAWH-Project` fresh into a scratch directory.
 3. Diff the locally-changed files against that clone's copy at the matching
    path (backend: `awh_az/backend/...`; dashboard:
@@ -213,14 +204,9 @@ local checkout. To ship **any** change (backend or dashboard) there:
 **Automated:** `python scripts/push_to_main_repo.py` performs steps 2-4 as a dry
 run (clones, diffs, lists what would change; excludes secrets/`.env*`/build
 output; never deletes). Add `--apply -m "message"` to commit and push (it asks
-for confirmation first). Backend changes still need the separate push to
-`Mounusha25/az_awh_monitoring_system` for Render.
-
-Do this for **every** change now, not just dashboard ones — the old
-"backend-only changes just need `git push origin main` from this checkout"
-shortcut is no longer sufficient on its own; it still gets the Render deploy,
-but the change also needs to land in `azawhasu-team/AzAWH-Project` via the
-clone-diff-copy procedure above to be reflected in the main repo.
+for confirmation first). Use `--only PREFIX` to restrict to specific paths.
+Pushing to `Mounusha25/az_awh_monitoring_system` is optional now (keeps the
+local checkout's remote current) and does not deploy anything.
 
 ---
 

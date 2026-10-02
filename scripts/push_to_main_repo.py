@@ -19,9 +19,9 @@ Safety properties:
     (--allow-new-top-level).
   * No Co-Authored-By trailer is added to the commit message.
 
-Backend changes ALSO need a normal `git push origin main` from this checkout so
-Render redeploys (it still watches Mounusha25/az_awh_monitoring_system); the
-script reminds you but does not do that push itself.
+Render and Vercel both deploy from the main repo, so this one push is all that
+is needed to ship a change. (Pushing this checkout's own `origin` is optional
+and deploys nothing.)
 """
 import argparse
 import fnmatch
@@ -161,8 +161,8 @@ def main(argv=None) -> int:
                 print(f"  - {f}: {why}")
 
         if any(f.startswith("awh_az/backend/") for f in to_copy):
-            print("\nREMINDER: backend files changed. Also run `git push origin main` from this checkout\n"
-                  "so Render redeploys (it still watches Mounusha25/az_awh_monitoring_system).")
+            print("\nNOTE: backend files changed; Render redeploys from the main repo on push. "
+                  "Verify with /health and /openapi.json afterwards.")
 
         if not to_copy:
             print("\nMain repo is already up to date. Nothing to do.")
