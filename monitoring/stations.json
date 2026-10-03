@@ -1,0 +1,4 @@
+{
+  "_comment": "expected_live maps station_name -> max minutes without a reading before an alert. Only list stations that SHOULD be reporting now; retired stations would alert forever. Example: {\"station_testbed_1@Powerplant\": 120}",
+  "expected_live": {}
+}

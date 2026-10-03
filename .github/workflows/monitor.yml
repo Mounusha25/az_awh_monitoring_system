@@ -1,0 +1,38 @@
+name: Monitor
+
+# A failing run emails whoever last edited this file's cron schedule (GitHub's
+# default for scheduled workflows), provided Actions notifications are enabled
+# in their GitHub notification settings.
+on:
+  schedule:
+    - cron: '*/10 * * * *'   # uptime check + keep-alive (Render free tier sleeps when idle)
+    - cron: '17 */6 * * *'   # station freshness (every 6h, to limit repeat emails during an outage)
+  workflow_dispatch:
+    inputs:
+      force_fail:
+        description: 'Fail on purpose, to test that the alert email arrives'
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  uptime:
+    if: github.event_name == 'workflow_dispatch' || github.event.schedule == '*/10 * * * *'
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - name: Deliberate failure (alert test)
+        if: ${{ inputs.force_fail }}
+        run: echo "force_fail was set - failing on purpose to test the alert email" && exit 1
+      - run: python3 scripts/check_backend.py --mode health
+
+  freshness:
+    if: github.event_name == 'workflow_dispatch' || github.event.schedule == '17 */6 * * *'
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - run: python3 scripts/check_backend.py --mode freshness
