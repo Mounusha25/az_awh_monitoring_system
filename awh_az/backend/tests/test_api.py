@@ -24,8 +24,15 @@ def test_health_without_backends(client):
     body = client.get("/health").json()
     assert body["status"] == "healthy"
     assert body["services"]["firestore"] == "offline"
+    # Redis down is a supported state too: the in-process cache keeps working.
+    assert body["services"]["redis"] == "unavailable (in-process cache active)"
     # No Postgres is a supported state (Firestore fallback), not a failure.
     assert body["services"]["postgres"].startswith("unavailable")
+
+
+def test_health_reports_redis_online_when_connected(client, monkeypatch):
+    monkeypatch.setattr(main.cache, "health_check", lambda: True)
+    assert client.get("/health").json()["services"]["redis"] == "online"
 
 
 def test_health_with_firestore(client, use_firestore):

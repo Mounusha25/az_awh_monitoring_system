@@ -1,3 +1,11 @@
+> **Decision (2026-10-03): production runs on the in-process fallback cache, deliberately.**
+> Redis (e.g. GCP Memorystore, roughly $35+/month minimum) was never provisioned and is not worth it
+> at this scale: one Render instance, one worker, a handful of cached endpoints with 30-300 s TTLs.
+> `/health` reports `redis: unavailable (in-process cache active)`, which is a normal state, not a fault.
+> Limits of the fallback: the cache is per process (a restart or cold start empties it) and is not shared
+> between workers/instances. Revisit Redis only if the backend is scaled to more than one worker or
+> instance, or if cold-start cache misses become a problem.
+
 # Redis Caching Implementation
 
 ## 🚀 What's Been Added

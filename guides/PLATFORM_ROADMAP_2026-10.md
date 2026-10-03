@@ -66,11 +66,24 @@
 - Device heartbeats (CPU temp, disk, last successful sensor read) alongside sensor data.
 
 ### 1.5 Cache, tests, exports
-- Provision real Redis (Memorystore), or formally document the in-process fallback.
-- Generate TypeScript types from the backend OpenAPI schema; add contract tests so
-  Pydantic models and dashboard types cannot drift.
-- Load-test `/export`. Stream large exports to Cloud Storage and return a signed
-  URL instead of holding a request open.
+- DONE 2026-10-03: **Cache decision.** Real Redis (Memorystore, ~$35+/month) is not worth it at this scale; the
+  in-process fallback is the intended production cache and is now documented in
+  `awh_az/backend/REDIS_CACHING.md`. `/health` reports `redis: unavailable (in-process cache active)`
+  instead of a misleading "offline". Revisit only if the backend runs >1 worker/instance.
+- DONE 2026-10-03: **Contract tests** (`awh_az/backend/tests/test_contract.py`). The dashboard's hand-written
+  types in `api-client.ts` are checked against the backend: field names both ways + value kinds for the 8
+  schema'd models, and the real `/hourly` output (which has no response schema) against `HourlyDataRow`.
+  Verified by deliberately breaking the types: all four mutations were caught. No drift existed today.
+  Not done: generating the TS types from OpenAPI (extra dependency; the tests give the safety without it).
+- DONE 2026-10-03: **`/export` streams.** It used to build every row in memory (~1 MB per 1,000 rows; a full
+  ~1.6M-row export would need >1 GB, enough to OOM a 512 MB instance from one unauthenticated request).
+  Measured on synthetic data, server-side only: 300k-row CSV +279 MB / 20 s -> +4 MB / 1.7 s; 1M rows stay at
+  +4 MB (CSV) and +3 MB (JSON) in ~6 s; the JSON path was 395 s for 300k rows (indent=2 encoder), now 1.9 s.
+  A read failure mid-download aborts the connection (no silent truncation); `parquet` now fails fast with 400.
+  Real Firestore reads will dominate the wall-clock time. Signed-URL/Cloud Storage export was not needed
+  once memory is flat. NOTE: the dashboard does not call `/export` at all (its download page uses `/readings`).
+- Open: `/export` and the other endpoints are unauthenticated; a concurrent-export limit was left out because a
+  permit leaked by a client that disconnects before streaming starts is hard to avoid cleanly.
 
 ---
 

@@ -6,7 +6,7 @@ from fastapi.concurrency import run_in_threadpool
 from typing import List, Optional
 from datetime import datetime, timezone
 from concurrent.futures import ThreadPoolExecutor
-import asyncio
+import itertools
 import json
 import io
 import csv
@@ -333,7 +333,8 @@ async def root():
 
 @app.get("/health", response_model=HealthResponse, tags=["Health"])
 async def health_check():
-    redis_status = "online" if cache.health_check() else "offline"
+    # Not a failure: cache.py falls back to an in-process cache, so caching still works.
+    redis_status = "online" if cache.health_check() else "unavailable (in-process cache active)"
     fs_status = "online" if db else "offline"
     # "unavailable" (not "offline") — /readings and /hourly work fine without
     # it via the Firestore fallback, this isn't a failure state on its own.
@@ -669,18 +670,19 @@ async def get_station_readings(
     return response
 
 
-def _fetch_station_export_rows(
+def _iter_station_export_rows(
     sname: str,
     start_date: Optional[datetime],
     end_date: Optional[datetime],
     fields: Optional[set],
-) -> list[dict]:
-    """Blocking Firestore fetch for one station's export rows.
+):
+    """Yield one station's export rows, a Firestore page at a time.
 
-    Runs inside run_in_threadpool — the firestore-admin client is synchronous,
-    so calling .stream() directly from an async route would block the single
-    event loop for the entire paginated fetch, stalling every other request
-    the server is handling in the meantime.
+    A generator, so memory is bounded by one page (settings.max_query_limit docs)
+    however large the range is. The previous version collected every row of every
+    station into a list first: ~1 MB of RAM per 1,000 rows, so a full export of
+    ~1.6M rows needed over 1 GB and one unfiltered request could OOM a 512 MB
+    instance. Blocking Firestore calls: advance this from a worker thread.
     """
     export_order = firestore.Query.ASCENDING if start_date else firestore.Query.DESCENDING
     query = (
@@ -694,7 +696,6 @@ def _fetch_station_export_rows(
     if end_date:
         query = query.where("timestamp", "<=", end_date)
 
-    rows: list[dict] = []
     # Paginate through all records — a single .limit(max_query_limit) caps at ~7 days
     # at 1 reading/minute. Loop in batches until Firestore returns a partial page.
     page_query = query.limit(settings.max_query_limit)
@@ -708,11 +709,64 @@ def _fetch_station_export_rows(
                 continue
             if fields:
                 data = {k: v for k, v in data.items() if k in fields or k in ("station_name", "timestamp")}
-            rows.append(data)
+            yield data
         if len(batch) < settings.max_query_limit:
             break
         page_query = query.start_after(batch[-1]).limit(settings.max_query_limit)
-    return rows
+
+
+def _iter_export_rows(station_names, start_date, end_date, fields):
+    """Stations one after another (not in parallel), which is what keeps memory flat."""
+    for sname in station_names:
+        yield from _iter_station_export_rows(sname, start_date, end_date, fields)
+
+
+EXPORT_CHUNK_BYTES = 64 * 1024
+
+
+def _export_columns(fields: Optional[set]) -> list[str]:
+    """Fixed, sorted CSV header. The old code sorted the union of keys seen in the
+    rows, which needed every row in memory first; for normal data this is identical."""
+    base = {"station_name", "timestamp"}
+    return sorted(base | set(fields)) if fields else sorted(base | set(READING_COLUMNS))
+
+
+def _csv_chunks(rows, columns):
+    buf = io.StringIO()
+    writer = csv.DictWriter(buf, fieldnames=columns, extrasaction="ignore")
+    writer.writeheader()
+    for row in rows:
+        writer.writerow(row)
+        if buf.tell() >= EXPORT_CHUNK_BYTES:
+            yield buf.getvalue().encode("utf-8")
+            buf.seek(0)
+            buf.truncate()
+    if buf.tell():
+        yield buf.getvalue().encode("utf-8")
+
+
+def _json_chunks(rows):
+    """A valid JSON array, one object per line (the old indent=2 encoder was also
+    ~10x slower: 300k rows took ~6.5 minutes)."""
+    parts, size, first = ["[\n"], 2, True
+    for row in rows:
+        piece = ("" if first else ",\n") + json.dumps(row, default=str)
+        first = False
+        parts.append(piece)
+        size += len(piece)
+        if size >= EXPORT_CHUNK_BYTES:
+            yield "".join(parts).encode("utf-8")
+            parts, size = [], 0
+    parts.append("\n]\n")
+    yield "".join(parts).encode("utf-8")
+
+
+def _logged_stream(chunks, label: str):
+    sent = 0
+    for chunk in chunks:
+        sent += len(chunk)
+        yield chunk
+    logger.info("export finished: %s, %d bytes", label, sent)
 
 
 # ---------------------------------------------------------------------------
@@ -720,7 +774,15 @@ def _fetch_station_export_rows(
 # ---------------------------------------------------------------------------
 @app.post("/export", tags=["Export"])
 async def export_data(request: BulkExportRequest):
-    """Export station data in CSV or JSON format."""
+    """Export station data in CSV or JSON format, streamed.
+
+    Rows are sent as they are read, so memory does not grow with the size of the
+    range. If a read fails after the download has started the connection is
+    aborted (the client sees a failed download), never a silently truncated file.
+    """
+    # Fail fast: this used to fetch every row first and only then say "not implemented".
+    if request.format not in ("csv", "json"):
+        raise HTTPException(status_code=400, detail=f"Format '{request.format}' not yet implemented")
     if not db:
         raise HTTPException(status_code=503, detail="Firestore not initialised")
 
@@ -733,43 +795,25 @@ async def export_data(request: BulkExportRequest):
         )
 
     fields = set(request.fields) if request.fields else None
+    rows = _iter_export_rows(station_names, request.start_date, request.end_date, fields)
 
-    # Fetch every station concurrently in worker threads instead of one
-    # sequential blocking pagination loop per station on the event loop.
-    per_station_rows = await asyncio.gather(*[
-        run_in_threadpool(_fetch_station_export_rows, sname, request.start_date, request.end_date, fields)
-        for sname in station_names
-    ])
-    all_readings: list[dict] = [row for rows in per_station_rows for row in rows]
-
-    if not all_readings:
+    # Read the first row before sending headers so "no data" can still be a real 404.
+    first = await run_in_threadpool(next, rows, None)
+    if first is None:
         raise HTTPException(status_code=404, detail="No data found matching the criteria")
+    rows = itertools.chain([first], rows)
 
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    label = f"{request.format}, {len(station_names)} station(s)"
     if request.format == "csv":
-        output = io.StringIO()
-        all_keys: set[str] = set()
-        for r in all_readings:
-            all_keys.update(r.keys())
-        fieldnames = sorted(all_keys)
-        writer = csv.DictWriter(output, fieldnames=fieldnames)
-        writer.writeheader()
-        writer.writerows(all_readings)
-        output.seek(0)
-        return StreamingResponse(
-            io.BytesIO(output.getvalue().encode()),
-            media_type="text/csv",
-            headers={"Content-Disposition": f"attachment; filename=station_data_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"},
-        )
-
-    elif request.format == "json":
-        json_data = json.dumps(all_readings, indent=2, default=str)
-        return StreamingResponse(
-            io.BytesIO(json_data.encode()),
-            media_type="application/json",
-            headers={"Content-Disposition": f"attachment; filename=station_data_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"},
-        )
-
-    raise HTTPException(status_code=400, detail=f"Format '{request.format}' not yet implemented")
+        chunks, media_type = _csv_chunks(rows, _export_columns(fields)), "text/csv"
+    else:
+        chunks, media_type = _json_chunks(rows), "application/json"
+    return StreamingResponse(
+        _logged_stream(chunks, label),
+        media_type=media_type,
+        headers={"Content-Disposition": f"attachment; filename=station_data_{stamp}.{request.format}"},
+    )
 
 
 # ---------------------------------------------------------------------------

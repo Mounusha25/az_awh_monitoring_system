@@ -115,6 +115,9 @@ def _isolated_state(monkeypatch):
     monkeypatch.setattr(main, "db", None)
     monkeypatch.setattr(main, "db_pool", None)
     monkeypatch.setattr(main.settings, "admin_api_key", "")
+    # Never touch a real Redis (a dev machine may have one on localhost:6379): force the
+    # in-process cache so flush_all() below can't FLUSHDB someone's real data.
+    monkeypatch.setattr(cache, "enabled", False)
     cache.flush_all()
     yield
     cache.flush_all()
