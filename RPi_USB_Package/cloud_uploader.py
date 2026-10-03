@@ -21,6 +21,11 @@ Timestamps (see cloud_functions/receive_data/main.py)
     clock can be badly wrong). Otherwise it is dropped here rather than stored with a
     wrong time; it is still in the local CSV.
 
+Authentication: if a station key is configured (env AWH_STATION_KEY, or the first line of
+station_state/station_key next to the queue) it is sent in the X-Station-Key header.
+HTTP 401/403 is treated as RETRYABLE, not permanent: a wrong or rotated key must keep
+readings queued until someone fixes it, never silently discard them. The key is never logged.
+
 Requires cloud_functions/receive_data to be deployed with reading_id/replayed
 support first. Against the old function it still works but a replay would be
 stamped with the upload time, so deploy the function before using this.
@@ -43,7 +48,8 @@ BACKOFF_START_SEC = 5
 BACKOFF_MAX_SEC = 300
 REQUEST_TIMEOUT_SEC = 10
 MAX_QUEUE_ROWS = 100_000          # ~69 days at one reading a minute
-RETRYABLE_4XX = {408, 429}
+RETRYABLE_4XX = {401, 403, 408, 429}   # 401/403: bad/rotated station key, fixable by an operator
+KEY_HEADER = "X-Station-Key"
 CLOCK_CACHE_SEC = 60
 
 log = logging.getLogger("awh.uploader")
@@ -87,6 +93,21 @@ def is_clock_synced(run=subprocess.run, now=time.time):
         value = False
     _clock_cache.update(at=now(), value=value)
     return value
+
+
+# ---------------------------------------------------------------------------
+# Station key
+# ---------------------------------------------------------------------------
+def load_station_key(key_path, env=os.environ):
+    """AWH_STATION_KEY env var wins; else the first line of key_path; else None."""
+    key = (env.get("AWH_STATION_KEY") or "").strip()
+    if key:
+        return key
+    try:
+        with open(key_path, "r", encoding="utf-8") as f:
+            return f.readline().strip() or None
+    except OSError:
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -164,8 +185,13 @@ class ReadingQueue:
 # ---------------------------------------------------------------------------
 class CloudUploader:
     def __init__(self, url, queue_path, post=requests.post, clock_synced=is_clock_synced,
-                 time_fn=time.time, max_queue_rows=MAX_QUEUE_ROWS):
+                 time_fn=time.time, max_queue_rows=MAX_QUEUE_ROWS, station_key=None):
         self.url = url
+        key = station_key or load_station_key(os.path.join(os.path.dirname(os.path.abspath(queue_path)), "station_key"))
+        self._headers = {KEY_HEADER: key} if key else {}
+        if not key:
+            log.warning("no station key configured (AWH_STATION_KEY or station_state/station_key); "
+                        "uploads are unauthenticated and will be rejected once the cloud enforces keys")
         self.queue = ReadingQueue(queue_path, max_queue_rows)
         self._post = post
         self._clock_synced = clock_synced
@@ -232,7 +258,7 @@ class CloudUploader:
             return "dropped"
 
         try:
-            resp = self._post(self.url, json=body, timeout=REQUEST_TIMEOUT_SEC)
+            resp = self._post(self.url, json=body, headers=self._headers, timeout=REQUEST_TIMEOUT_SEC)
             status = resp.status_code
         except Exception as e:
             return self._retry(row, f"{type(e).__name__}: {e}")
@@ -251,6 +277,8 @@ class CloudUploader:
                       status, getattr(resp, "text", "")[:200])
             self.queue.delete(row["id"])
             return "dropped"
+        if status in (401, 403):
+            return self._retry(row, f"HTTP {status}: station key rejected - check station_state/station_key")
         return self._retry(row, f"HTTP {status}")
 
     def _retry(self, row, why):

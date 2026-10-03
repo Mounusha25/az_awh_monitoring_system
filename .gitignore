@@ -34,3 +34,9 @@ Thumbs.db
 # IDE
 .vscode/
 .idea/
+
+# Pi runtime state: upload queue, station key (a secret), logs
+**/station_state/
+**/station_key
+**/logs/
+*.sqlite3

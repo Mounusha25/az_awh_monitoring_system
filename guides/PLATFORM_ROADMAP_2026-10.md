@@ -53,8 +53,13 @@
      timestamps and the local CSV should have no holes.
   5. Then the SRP field testbed (AquaPars1_new_pm.py).
   Rollback: put the old AquaPars1.py back; nothing else needs undoing.
-  Known limits: a reading captured with an unsynced Pi clock that is later replayed is dropped
-  (still in the CSV) rather than stored with a wrong time; the function is still unauthenticated.
+  Known limit: a reading captured with an unsynced Pi clock that is later replayed is dropped
+  (still in the CSV) rather than stored with a wrong time.
+- BUILT 2026-10-03 (not yet deployed): `receive_data` authentication. Shared key in the
+  `X-Station-Key` header, soft mode first (old Pis keep working, unauthenticated requests are logged
+  by station name), then `REQUIRE_STATION_KEY=true`. Pi uploader sends the key from
+  `station_state/station_key`; a rejected key keeps readings queued, never drops them. Also blocks
+  `/` in station names and oversized bodies. Steps: `cloud_functions/receive_data/README.md`.
 - systemd services with a watchdog; OTA config updates.
 - Remove duplicate scripts (`read_power.py` vs `read_power_new.py`) to prevent
   Mac/Pi drift and false debugging alarms.

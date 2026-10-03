@@ -1,4 +1,5 @@
 """Tests for the receive_data Cloud Function, with Firestore faked."""
+import logging
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -62,9 +63,9 @@ def db(monkeypatch):
     return fake
 
 
-def call(payload=None, method="POST", raw=None):
+def call(payload=None, method="POST", raw=None, headers=None):
     app = Flask(__name__)
-    kwargs = {"method": method}
+    kwargs = {"method": method, "headers": headers or {}}
     if payload is not None:
         kwargs["json"] = payload
     if raw is not None:
@@ -189,3 +190,139 @@ def test_firestore_failure_is_500_without_leaking_details(db, monkeypatch):
     status, body = call({"station_name": "s1"})
     assert status == 500 and body["message"] == "Internal error"
     assert "secret" not in str(body)
+
+
+# ---------------------------------------------------------------------------
+# Authentication: shared key in X-Station-Key, soft mode then enforce mode
+# ---------------------------------------------------------------------------
+KEY = "k-ASU-1234567890abcdef"
+OTHER = "k-SRP-fedcba0987654321"
+OK = {"station_name": "s1", "weight": 1}
+
+
+@pytest.fixture
+def clean_env(monkeypatch):
+    monkeypatch.delenv("STATION_KEYS", raising=False)
+    monkeypatch.delenv("REQUIRE_STATION_KEY", raising=False)
+    return monkeypatch
+
+
+def rejected(db, payload, headers=None, code=401):
+    with pytest.raises(HTTPException) as exc:
+        call(payload, headers=headers)
+    assert exc.value.code == code
+    assert db.readings.store == {}, "a rejected request must not write anything"
+
+
+def test_auth_off_when_no_keys_configured(db, clean_env):
+    assert call(OK)[0] == 200                                   # legacy behaviour
+    assert call(dict(OK), headers={"X-Station-Key": "anything"})[0] == 200
+
+
+def test_soft_mode_accepts_missing_key_but_logs_the_station(db, clean_env, caplog):
+    clean_env.setenv("STATION_KEYS", KEY)
+    caplog.set_level(logging.WARNING, logger="receive_data")
+    assert call({"station_name": "station_old_pi", "weight": 1})[0] == 200
+    assert "unauthenticated request" in caplog.text and "station_old_pi" in caplog.text
+
+
+def test_soft_mode_valid_key_is_quiet(db, clean_env, caplog):
+    clean_env.setenv("STATION_KEYS", KEY)
+    caplog.set_level(logging.WARNING, logger="receive_data")
+    assert call(OK, headers={"X-Station-Key": KEY})[0] == 200
+    assert "unauthenticated" not in caplog.text
+
+
+def test_soft_mode_wrong_key_is_always_rejected(db, clean_env):
+    clean_env.setenv("STATION_KEYS", KEY)
+    rejected(db, OK, {"X-Station-Key": "wrong-key-value"})
+    rejected(db, OK, {"X-Station-Key": KEY + "x"})             # near miss
+    rejected(db, OK, {"X-Station-Key": KEY[:-1]})
+
+
+def test_enforce_mode_requires_a_valid_key(db, clean_env):
+    clean_env.setenv("STATION_KEYS", KEY)
+    clean_env.setenv("REQUIRE_STATION_KEY", "true")
+    rejected(db, OK)                                            # missing
+    rejected(db, OK, {"X-Station-Key": "nope"})                 # wrong
+    assert call(dict(OK), headers={"X-Station-Key": KEY})[0] == 200
+
+
+@pytest.mark.parametrize("flag", ["TRUE", " true ", "True"])
+def test_enforce_flag_parsing(db, clean_env, flag):
+    clean_env.setenv("STATION_KEYS", KEY)
+    clean_env.setenv("REQUIRE_STATION_KEY", flag)
+    rejected(db, OK)
+
+
+@pytest.mark.parametrize("flag", ["false", "0", "", "yes"])
+def test_only_true_enforces(db, clean_env, flag):
+    clean_env.setenv("STATION_KEYS", KEY)
+    clean_env.setenv("REQUIRE_STATION_KEY", flag)
+    assert call(OK)[0] == 200
+
+
+def test_enforce_without_any_keys_fails_closed(db, clean_env, caplog):
+    clean_env.setenv("REQUIRE_STATION_KEY", "true")
+    caplog.set_level(logging.ERROR, logger="receive_data")
+    rejected(db, OK)
+    rejected(db, OK, {"X-Station-Key": "whatever"})
+    assert "STATION_KEYS is empty" in caplog.text
+
+
+def test_multiple_keys_allow_rotation(db, clean_env):
+    clean_env.setenv("STATION_KEYS", f" {KEY} , {OTHER} ,, ")   # stray spaces/commas tolerated
+    clean_env.setenv("REQUIRE_STATION_KEY", "true")
+    assert call(dict(OK), headers={"X-Station-Key": KEY})[0] == 200
+    assert call(dict(OK), headers={"X-Station-Key": OTHER})[0] == 200
+    assert len(db.readings.store) == 2
+    db.readings.store.clear()
+    rejected(db, OK, {"X-Station-Key": "retired-key-0000"})
+
+
+def test_non_ascii_key_header_is_rejected_cleanly(db, clean_env):
+    clean_env.setenv("STATION_KEYS", KEY)
+    rejected(db, OK, {"X-Station-Key": "k\u00e9y-with-accent"})
+
+
+def test_keys_are_never_logged_or_returned(db, clean_env, caplog):
+    clean_env.setenv("STATION_KEYS", KEY)
+    caplog.set_level(logging.DEBUG)
+    call(dict(OK), headers={"X-Station-Key": KEY})
+    with pytest.raises(HTTPException) as exc:
+        call(dict(OK), headers={"X-Station-Key": "guess-guess-guess"})
+    assert KEY not in caplog.text and "guess-guess-guess" not in caplog.text
+    assert KEY not in str(exc.value.description)
+
+
+def test_auth_checked_before_body_is_parsed(db, clean_env):
+    clean_env.setenv("STATION_KEYS", KEY)
+    clean_env.setenv("REQUIRE_STATION_KEY", "true")
+    with pytest.raises(HTTPException) as exc:
+        call(raw="{not json")
+    assert exc.value.code == 401
+
+
+# ---------------------------------------------------------------------------
+# Input validation
+# ---------------------------------------------------------------------------
+@pytest.mark.parametrize("name", [
+    "a/b", "x/readings/y", "..", ".", "__reserved__", "a" * 201, "bad\nname", "tab\tname", "nul\x00",
+])
+def test_unsafe_station_names_rejected(db, clean_env, name):
+    rejected(db, {"station_name": name, "weight": 1}, code=400)
+
+
+@pytest.mark.parametrize("name", [
+    "station_AquaPars #2 @Power Station, Tempe",   # real names contain spaces, #, @ and commas
+    "station_testbed_1@Powerplant",
+    "station_Dewstand @ GreenHouse, Polytech",
+    "a" * 200,
+])
+def test_real_station_names_accepted(db, clean_env, name):
+    assert call({"station_name": name, "weight": 1})[0] == 200
+
+
+def test_oversized_body_rejected(db, clean_env):
+    big = {"station_name": "s1", "blob": "x" * (main.MAX_BODY_BYTES + 10)}
+    rejected(db, big, code=413)

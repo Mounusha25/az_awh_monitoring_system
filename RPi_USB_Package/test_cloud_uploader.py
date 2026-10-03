@@ -25,7 +25,7 @@ class FakePost:
     def __init__(self, script=(), default=200):
         self.script, self.default, self.calls = list(script), default, []
 
-    def __call__(self, url, json=None, timeout=None):
+    def __call__(self, url, json=None, headers=None, timeout=None):
         self.calls.append(json)
         step = self.script.pop(0) if self.script else self.default
         if isinstance(step, Exception):
@@ -233,7 +233,7 @@ def test_slow_post_does_not_block_submit(tmp_path):
     """The whole point: a hanging network call must not stall the caller."""
     gate = threading.Event()
 
-    def hanging_post(url, json=None, timeout=None):
+    def hanging_post(url, json=None, headers=None, timeout=None):
         gate.wait(5)
         return Resp(200)
 
@@ -258,8 +258,9 @@ class Proc:
 
 
 @pytest.fixture(autouse=True)
-def _reset_clock_cache():
+def _reset_clock_cache(monkeypatch):
     cu._clock_cache.update(at=0.0, value=False)
+    monkeypatch.delenv("AWH_STATION_KEY", raising=False)  # a dev machine's real key must not leak into tests
 
 
 def test_is_clock_synced_yes_no_and_failure():
@@ -292,3 +293,78 @@ def test_file_logging_is_idempotent_and_writes(tmp_path):
     for h in logger.handlers:
         h.flush()
     assert "hello-from-test" in (tmp_path / "logs" / "station.log").read_text()
+
+
+# ---------------------------------------------------------------------------
+# Station key
+# ---------------------------------------------------------------------------
+KEY = "k-ASU-1234567890abcdef"
+
+
+def test_key_from_file_is_sent_as_header(tmp_path):
+    (tmp_path / "station_key").write_text(f"  {KEY}\n# comment-less file, extra lines ignored\n")
+    seen = {}
+
+    def post(url, json=None, headers=None, timeout=None):
+        seen.update(headers=headers)
+        return Resp(200)
+
+    up, _, _ = make(tmp_path, post=post)
+    up.submit("st1", {"n": 1})
+    assert up.attempt_next() == "sent"
+    assert seen["headers"] == {"X-Station-Key": KEY}
+
+
+def test_env_key_beats_file(tmp_path, monkeypatch):
+    (tmp_path / "station_key").write_text("file-key-aaaaaaaa")
+    monkeypatch.setenv("AWH_STATION_KEY", KEY)
+    up, _, _ = make(tmp_path)
+    assert up._headers == {"X-Station-Key": KEY}
+
+
+def test_no_key_sends_no_header_and_warns_once(tmp_path, caplog):
+    caplog.set_level(logging.WARNING, logger="awh.uploader")
+    up, post, _ = make(tmp_path)
+    assert up._headers == {}
+    assert caplog.text.count("no station key configured") == 1
+
+
+@pytest.mark.parametrize("content", ["", "   \n", "\n\n"])
+def test_blank_key_file_means_no_key(tmp_path, content):
+    (tmp_path / "station_key").write_text(content)
+    up, _, _ = make(tmp_path)
+    assert up._headers == {}
+
+
+@pytest.mark.parametrize("status", [401, 403])
+def test_rejected_key_keeps_readings_queued_not_dropped(tmp_path, status):
+    """A wrong/rotated key must never cause data loss: readings wait for an operator fix."""
+    up, _, clock = make(tmp_path, post=FakePost(default=status))
+    for i in range(3):
+        up.submit("st1", {"n": i})
+        assert up.attempt_next() == "retry"
+    assert len(up.queue) == 3
+    assert "station key rejected" in up.stats()["last_error"]
+
+
+def test_readings_flow_again_after_key_is_fixed(tmp_path):
+    post = FakePost([401, 401])
+    up, _, _ = make(tmp_path, post=post)
+    up.submit("st1", {"n": 1})
+    up.submit("st1", {"n": 2})
+    assert up.attempt_next() == "retry" and up.attempt_next() == "retry"
+    # operator fixes the key; cloud now accepts
+    assert up.attempt_next() == "sent" and up.attempt_next() == "sent"
+    assert [c["n"] for c in post.calls[-2:]] == [1, 2] and len(up.queue) == 0
+
+
+def test_key_never_appears_in_logs(tmp_path, caplog):
+    (tmp_path / "station_key").write_text(KEY)
+    caplog.set_level(logging.DEBUG)
+    up, _, _ = make(tmp_path, post=FakePost([401, 500, requests_error()], default=200))
+    for i in range(4):
+        up.submit("st1", {"n": i})
+        up.attempt_next()
+    assert KEY not in caplog.text
+    assert KEY not in json.dumps(up.stats(), default=str)
+    assert KEY not in json.dumps(json.loads(up.queue.oldest()["payload"]) if up.queue.oldest() else {})

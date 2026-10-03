@@ -19,7 +19,21 @@ Optional control fields (backward compatible - old stations omit them):
 
 The control fields are removed before storing, so they never appear as sensor
 fields downstream (the backend lists every stored key as an available field).
+
+Authentication (shared secret in the X-Station-Key header)
+  STATION_KEYS          comma-separated valid keys (several allows zero-downtime rotation).
+  REQUIRE_STATION_KEY   "true" to enforce. Anything else = soft mode.
+  Soft mode (default): a request with NO key is still accepted but logged with its
+  station name ("unauthenticated request"), so you can see which stations still need
+  the key; a request with a WRONG key is always rejected (401). If STATION_KEYS is
+  empty and enforcement is off, auth is off entirely (legacy behaviour).
+  Enforce mode: missing or wrong key -> 401. With no keys configured it rejects
+  everything (fail closed) rather than silently opening up.
+Keys are never logged or echoed back.
 """
+import hmac
+import logging
+import os
 import re
 from datetime import datetime, timedelta, timezone
 
@@ -28,6 +42,12 @@ from flask import jsonify, abort, Request
 from google.api_core.exceptions import AlreadyExists
 from google.cloud import firestore
 from werkzeug.exceptions import HTTPException
+
+KEY_HEADER = "X-Station-Key"
+MAX_BODY_BYTES = 64 * 1024
+MAX_STATION_NAME_LEN = 200
+
+logger = logging.getLogger("receive_data")
 
 MAX_REPLAY_AGE = timedelta(days=30)
 MAX_FUTURE_SKEW = timedelta(minutes=5)
@@ -42,6 +62,39 @@ def get_db():
     if _db is None:
         _db = firestore.Client()
     return _db
+
+
+def configured_keys():
+    return [k.strip() for k in os.environ.get("STATION_KEYS", "").split(",") if k.strip()]
+
+
+def enforcing():
+    return os.environ.get("REQUIRE_STATION_KEY", "").strip().lower() == "true"
+
+
+def check_auth(headers):
+    """Return (allowed, missing_key). missing_key=True means accepted in soft mode without a key."""
+    keys = configured_keys()
+    provided = headers.get(KEY_HEADER)
+    if enforcing() and not keys:
+        logger.error("REQUIRE_STATION_KEY is set but STATION_KEYS is empty; rejecting everything")
+        return False, False
+    if provided:
+        ok = any(hmac.compare_digest(provided.encode("utf-8"), k.encode("utf-8")) for k in keys)
+        if keys and not ok:
+            return False, False
+        return True, False          # valid key (or auth off and a key was sent: ignore it)
+    if enforcing():
+        return False, False
+    return True, bool(keys)         # soft mode: allowed, flagged only if keys exist to migrate to
+
+
+def valid_station_name(name) -> bool:
+    """Firestore document id rules: no '/', not '.'/'..', not __x__, bounded; no control chars."""
+    return (isinstance(name, str) and 0 < len(name) <= MAX_STATION_NAME_LEN
+            and "/" not in name and name not in (".", "..")
+            and not re.fullmatch(r"__.*__", name)
+            and not any(ord(c) < 32 or ord(c) == 127 for c in name))
 
 
 def resolve_timestamp(client_timestamp, replayed: bool, now: datetime):
@@ -64,14 +117,22 @@ def receive_data(request: Request):
     if request.method != "POST":
         return abort(405)
 
+    allowed, missing_key = check_auth(request.headers)
+    if not allowed:
+        return abort(401)
+    if (request.content_length or 0) > MAX_BODY_BYTES:
+        return abort(413)
+
     try:
         data = request.get_json()
         if not data:
             return abort(400, "No JSON received.")
 
         station_name = data.get("station_name")
-        if not station_name or not isinstance(station_name, str):
+        if not station_name or not valid_station_name(station_name):
             return abort(400, "Missing or invalid station_name in payload.")
+        if missing_key:
+            logger.warning("unauthenticated request (no %s) from station %r", KEY_HEADER, station_name)
 
         reading_id = data.pop("reading_id", None)
         if reading_id is not None and not (isinstance(reading_id, str) and READING_ID_RE.match(reading_id)):

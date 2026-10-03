@@ -57,7 +57,7 @@ class FakePost:
     def __init__(self):
         self.calls = []
 
-    def __call__(self, url, json=None, timeout=None):
+    def __call__(self, url, json=None, headers=None, timeout=None):
         self.calls.append(json)
         return types.SimpleNamespace(status_code=200, text="ok")
 
@@ -151,7 +151,7 @@ def test_outage_does_not_stall_the_save_loop(station):
     import time
     _, controller = station
 
-    def hanging(url, json=None, timeout=None):
+    def hanging(url, json=None, headers=None, timeout=None):
         time.sleep(1.5)
 
     controller.uploader._post = hanging
