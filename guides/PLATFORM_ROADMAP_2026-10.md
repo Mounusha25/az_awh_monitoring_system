@@ -32,7 +32,9 @@
 
 ### 1.3 Observability and alerting
 - Structured logging; Prometheus/Grafana or Cloud Monitoring; uptime check on `/health`.
-- GCP billing budget alert (the 2026-08-05 outage was a free trial expiring unnoticed).
+- DONE 2026-10-02: GCP billing budget alert ($7/month, alerts at 50/90/100/150%).
+  Billing is a paid account (not a trial). A budget alerts on overspend only; it would not
+  have caught the 2026-08-05 outage (billing detached) — the Monitor workflow does that.
 - Per-station data-freshness alerts ("station N silent for 30 min"). Currently 8 of
   9 stations being inactive is only visible if someone looks.
 

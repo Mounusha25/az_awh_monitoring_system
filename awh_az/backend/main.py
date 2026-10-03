@@ -42,7 +42,9 @@ from models import (
 )
 from config import settings
 from cache import cache, get_stations_cache_key, get_station_readings_cache_key, invalidate_station_cache
+from logging_config import RequestLoggingMiddleware, setup_logging
 
+setup_logging()
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -290,13 +292,13 @@ async def lifespan(app: FastAPI):
     ensure_default_registry_stations()
     init_postgres()
     if db:
-        print("✅ Firestore initialised – ready to serve")
+        logger.info("Firestore initialised - ready to serve")
     else:
-        print("⚠️  Firestore NOT initialised – check serviceAccountKey.json")
+        logger.error("Firestore NOT initialised - check FIREBASE_CREDENTIALS_JSON / serviceAccountKey.json")
     if db_pool:
-        print("✅ PostgreSQL pool initialised – /readings and /hourly serving from Postgres")
+        logger.info("PostgreSQL pool initialised - /readings and /hourly serving from Postgres")
     else:
-        print("⚠️  PostgreSQL NOT initialised – /readings and /hourly will fail")
+        logger.warning("PostgreSQL not available - /readings and /hourly are using the Firestore fallback")
     yield
     if db_pool:
         db_pool.closeall()
@@ -316,6 +318,9 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Added last => outermost: logs every request, tags it with a request id.
+app.add_middleware(RequestLoggingMiddleware)
 
 
 # ---------------------------------------------------------------------------
@@ -977,6 +982,9 @@ def _compute_hourly_aggregation_sync(
                 db.collection(settings.firestore_collection).document(station_name).get().to_dict() or {}
             )
         except Exception:
+            # Falls back to the default duct area, which changes efficiency numbers.
+            logger.warning("could not read station doc; using default intake area",
+                           extra={"station": station_name}, exc_info=True)
             station_doc_data = {}
     raw_area = station_doc_data.get("intake_area_m2")
     intake_area_m2 = raw_area if isinstance(raw_area, (int, float)) and raw_area > 0 else AWH_DUCT_AREA_M2
