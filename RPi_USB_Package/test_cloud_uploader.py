@@ -368,3 +368,11 @@ def test_key_never_appears_in_logs(tmp_path, caplog):
     assert KEY not in caplog.text
     assert KEY not in json.dumps(up.stats(), default=str)
     assert KEY not in json.dumps(json.loads(up.queue.oldest()["payload"]) if up.queue.oldest() else {})
+
+
+def test_successful_upload_logs_an_info_line_for_the_operator(tmp_path, caplog):
+    caplog.set_level(logging.INFO, logger="awh.uploader")
+    up, _, _ = make(tmp_path)
+    up.submit("st1", {"n": 1})
+    assert up.attempt_next() == "sent"
+    assert "[Cloud Upload] 200 OK" in caplog.text and "0 still queued" in caplog.text

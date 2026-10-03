@@ -39,7 +39,8 @@
   9 stations being inactive is only visible if someone looks.
 
 ### 1.4 Edge (Raspberry Pi) reliability
-- BUILT 2026-10-03 (not yet deployed): durable store-and-forward uploader
+- BUILT 2026-10-03 (function DEPLOYED 2026-10-03 and verified with non-writing requests; Pi side not yet
+  deployed): durable store-and-forward uploader
   (`RPi_USB_Package/cloud_uploader.py`, wired into AquaPars1.py and AquaPars1_new_pm.py) and a
   backward-compatible `receive_data` Cloud Function (`cloud_functions/receive_data/`) that accepts
   `reading_id` (idempotent retries) and `replayed`+`client_timestamp` (correct time for replays).

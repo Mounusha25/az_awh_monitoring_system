@@ -109,12 +109,16 @@ tail -f measure_data/*_measure_data.csv
 STEP 5: VERIFY CLOUD UPLOAD
 ===============================================
 
-# In the terminal running AquaPars1.py, look for:
-[Cloud Upload] 200: ...
+# Uploads now go through a durable queue (cloud_uploader.py). In the terminal
+# running AquaPars1.py (and in logs/station.log) look for, about once a minute:
+[Cloud Upload] 200 OK - reading sent (0 still queued)
 
-# 200 = Success
-# 4xx/5xx = Error (check internet or URL)
-# No message = Not uploading (wait 60 seconds for first upload)
+# 200 OK = success.
+# "upload failing (...)" = network/cloud problem. Readings are QUEUED on disk and
+#   retried automatically, not lost; "upload recovered" appears when it clears.
+# "station key rejected" = wrong/missing key once the cloud enforces keys.
+# No message after ~2 minutes = check logs/station.log and that the program is running.
+# See guides/SITE_VISIT_CHECKLIST.md for the full on-site procedure.
 
 ===============================================
 STEP 6: STOP THE SYSTEM

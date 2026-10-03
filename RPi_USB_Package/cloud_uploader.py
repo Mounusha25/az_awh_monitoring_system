@@ -270,7 +270,9 @@ class CloudUploader:
             self.last_success_ts = self._time()
             self.last_error = None
             self.queue.delete(row["id"])
-            log.debug("uploaded reading %s", row["reading_id"])
+            # INFO (not DEBUG): this is the operator's "it's working" signal, replacing the old
+            # "[Cloud Upload] 200" console line. ~1 line/minute; the rotating log keeps weeks of it.
+            log.info("[Cloud Upload] %s OK - reading sent (%d still queued)", status, max(len(self.queue), 0))
             return "sent"
         if 400 <= status < 500 and status not in RETRYABLE_4XX:
             log.error("cloud rejected a reading permanently (HTTP %s); dropping it: %s",
