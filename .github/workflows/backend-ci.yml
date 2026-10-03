@@ -7,6 +7,12 @@ on:
       - 'ingestion_worker.py'
       - 'test_ingestion_worker.py'
       - 'scripts/**'
+      - 'cloud_functions/**'
+      - 'RPi_USB_Package/cloud_uploader.py'
+      - 'RPi_USB_Package/test_cloud_uploader.py'
+      - 'RPi_USB_Package/test_station_wiring.py'
+      - 'RPi_USB_Package/AquaPars1.py'
+      - 'RPi_USB_Package/AquaPars1_new_pm.py'
       - '.github/workflows/backend-ci.yml'
   pull_request:
     paths:
@@ -14,6 +20,12 @@ on:
       - 'ingestion_worker.py'
       - 'test_ingestion_worker.py'
       - 'scripts/**'
+      - 'cloud_functions/**'
+      - 'RPi_USB_Package/cloud_uploader.py'
+      - 'RPi_USB_Package/test_cloud_uploader.py'
+      - 'RPi_USB_Package/test_station_wiring.py'
+      - 'RPi_USB_Package/AquaPars1.py'
+      - 'RPi_USB_Package/AquaPars1_new_pm.py'
       - '.github/workflows/backend-ci.yml'
 
 jobs:
@@ -31,9 +43,12 @@ jobs:
       - run: pip install -r awh_az/backend/requirements.txt pytest httpx ruff   # httpx: FastAPI TestClient
       # Syntax errors and undefined names only — catches real breakage without
       # failing on style the codebase hasn't adopted.
-      - run: ruff check --select E9,F63,F7,F82 awh_az/backend scripts ingestion_worker.py test_ingestion_worker.py --exclude awh_az/backend/venv
-      - run: python -m compileall -q awh_az/backend/main.py awh_az/backend/models.py awh_az/backend/config.py awh_az/backend/cache.py awh_az/backend/datadownload.py awh_az/backend/logging_config.py ingestion_worker.py
-      - run: python -m pytest test_ingestion_worker.py awh_az/backend/tests scripts -v
+      - run: ruff check --select E9,F63,F7,F82 awh_az/backend scripts ingestion_worker.py test_ingestion_worker.py cloud_functions RPi_USB_Package/cloud_uploader.py RPi_USB_Package/test_cloud_uploader.py RPi_USB_Package/test_station_wiring.py RPi_USB_Package/AquaPars1.py RPi_USB_Package/AquaPars1_new_pm.py --exclude awh_az/backend/venv
+      - run: python -m compileall -q awh_az/backend/main.py awh_az/backend/models.py awh_az/backend/config.py awh_az/backend/cache.py awh_az/backend/datadownload.py awh_az/backend/logging_config.py ingestion_worker.py RPi_USB_Package/cloud_uploader.py RPi_USB_Package/AquaPars1.py RPi_USB_Package/AquaPars1_new_pm.py
+      - run: python -m pytest test_ingestion_worker.py awh_az/backend/tests scripts RPi_USB_Package/test_cloud_uploader.py RPi_USB_Package/test_station_wiring.py -v
+      # The Cloud Function's main.py has the same module name as the backend's, so it needs its own pytest run.
+      - run: pip install -r cloud_functions/receive_data/requirements.txt
+      - run: python -m pytest cloud_functions -v
 
   # Render builds this same Dockerfile; failing here is cheaper than failing there.
   docker-build:

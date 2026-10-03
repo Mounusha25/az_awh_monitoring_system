@@ -124,6 +124,7 @@ az_awh_monitoring_system/
 │   ├── read_power.py                  ← Older power meter reader (Prolific adapter, hardcoded path)
 │   ├── read_power_new.py              ← DEM730P power meter via RS485 Modbus RTU (auto-detects FTDI by-id)
 │   ├── pump_controller.py             ← Pump on/off control
+│   ├── cloud_uploader.py              ← Durable non-blocking uploader (SQLite queue, retry, replay); used by both AquaPars scripts
 │   ├── RASPBERRY_PI_COMMANDS.txt      ← Pi-specific setup and operational commands
 │   ├── test_balance.py                ← Individual sensor test script
 │   ├── test_flow.py                   ← Individual sensor test script

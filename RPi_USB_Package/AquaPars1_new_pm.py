@@ -13,8 +13,6 @@ import time
 import csv
 from datetime import datetime, timedelta
 
-import requests
-
 from intake_anemometer import intake_anemometer
 from outtake_anemometer import outtake_anemometer
 from pump_controller import PumpController
@@ -22,6 +20,7 @@ from read_balance import BalanceSerialReader, parse_balance_line
 from read_power_new import PowerMeterReader
 from read_flow import FlowMeterReader
 from awh_ui_layout import AWHControlPanel
+from cloud_uploader import CloudUploader, setup_file_logging
 
 STATION_NAME = "station_testbed_1@Powerplant"
 CLOUD_URL = "https://us-central1-awh-project-460421.cloudfunctions.net/receive_data"
@@ -30,35 +29,6 @@ CLOUD_UPLOAD_EVERY_SEC = 60  # send to cloud at most once every 60s
 
 READER_STALE_SEC = 45        # if no new data for this many seconds, restart that reader
 WATCHDOG_POLL_SEC = 5        # how often the watchdog checks staleness
-
-
-def send_to_cloud(station_name, data):
-    """POST one measurement record to the Cloud Function."""
-    payload = {
-        "station_name": station_name,
-        "temperature": data.get("temperature"),
-        "humidity": data.get("humidity"),
-        "velocity": data.get("velocity"),
-        "unit": data.get("unit"),
-        "outtake_temperature": data.get("outtake_temperature"),
-        "outtake_humidity": data.get("outtake_humidity"),
-        "outtake_velocity": data.get("outtake_velocity"),
-        "outtake_unit": data.get("outtake_unit"),
-        "voltage": data.get("voltage"),
-        "current": data.get("current"),
-        "power": data.get("power"),
-        "energy": data.get("energy"),
-        "weight": data.get("weight"),
-        "pump_status": data.get("pump_status"),
-        "flow_lmin": data.get("flow_lmin"),
-        "flow_hz": data.get("flow_hz"),
-        "flow_total": data.get("flow_total"),
-    }
-    try:
-        response = requests.post(CLOUD_URL, json=payload, timeout=10)
-        print(f"[Cloud Upload] {response.status_code}: {response.text}")
-    except Exception as e:
-        print(f"[Cloud Upload] Failed: {e}")
 
 
 class StationController:
@@ -85,6 +55,9 @@ class StationController:
         self.last_file_time = datetime.now()
 
         self.cloud_upload_interval_secs = CLOUD_UPLOAD_EVERY_SEC
+        # Non-blocking, durable uploads: readings are queued on disk and retried,
+        # so a network outage can't stall CSV logging or lose data.
+        self.uploader = CloudUploader(CLOUD_URL, os.path.join("station_state", "upload_queue.sqlite3"))
         self._last_cloud_upload_ts = 0.0  # 0 => first call uploads immediately
 
         self.current_weight = None
@@ -221,6 +194,7 @@ class StationController:
         self.running = True
         self.start_time = time.time()
 
+        self.uploader.start()
         self._start_balance_reader()
         self._start_power_reader()
         self._start_flow_reader()
@@ -239,6 +213,8 @@ class StationController:
         try: self.flow_reader.stop()
         except: pass
         try: self.csv_file.close()
+        except: pass
+        try: self.uploader.stop()
         except: pass
         try: self.pump.cleanup()
         except: pass
@@ -334,7 +310,7 @@ class StationController:
         self.csv_file.flush()
 
         if (now_ts - self._last_cloud_upload_ts) >= self.cloud_upload_interval_secs:
-            send_to_cloud(self.station_name, {
+            self.uploader.submit(self.station_name, {
                 "temperature": t_in, "humidity": h_in, "velocity": v_in, "unit": v_unit_in,
                 "outtake_temperature": t_out, "outtake_humidity": h_out, "outtake_velocity": v_out, "outtake_unit": v_unit_out,
                 "voltage": V, "current": A, "power": W, "energy": Wh,
@@ -412,6 +388,7 @@ class StationController:
 
 
 def main():
+    setup_file_logging("logs")
     csv_dir = 'measure_data'
     os.makedirs(csv_dir, exist_ok=True)
 

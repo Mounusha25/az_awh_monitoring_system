@@ -39,7 +39,22 @@
   9 stations being inactive is only visible if someone looks.
 
 ### 1.4 Edge (Raspberry Pi) reliability
-- Local store-and-forward queue (SQLite) so network drops do not lose readings.
+- BUILT 2026-10-03 (not yet deployed): durable store-and-forward uploader
+  (`RPi_USB_Package/cloud_uploader.py`, wired into AquaPars1.py and AquaPars1_new_pm.py) and a
+  backward-compatible `receive_data` Cloud Function (`cloud_functions/receive_data/`) that accepts
+  `reading_id` (idempotent retries) and `replayed`+`client_timestamp` (correct time for replays).
+  Also fixes: upload no longer blocks the 1-second save loop; logs go to `logs/station.log`.
+  **Rollout order matters** (the function change is backward compatible, so old Pi code keeps working):
+  1. Deploy the function (see `cloud_functions/receive_data/README.md`; needs azawh.asu access).
+  2. Confirm existing stations still show fresh readings in the dashboard.
+  3. Copy `cloud_uploader.py` + the updated AquaPars1.py to the ASU Pi first; run it; check
+     `logs/station.log` and `station_state/upload_queue.sqlite3` appear and readings keep arriving.
+  4. Test an outage: disconnect the network ~5 min, reconnect; the gap should fill with correct
+     timestamps and the local CSV should have no holes.
+  5. Then the SRP field testbed (AquaPars1_new_pm.py).
+  Rollback: put the old AquaPars1.py back; nothing else needs undoing.
+  Known limits: a reading captured with an unsynced Pi clock that is later replayed is dropped
+  (still in the CSV) rather than stored with a wrong time; the function is still unauthenticated.
 - systemd services with a watchdog; OTA config updates.
 - Remove duplicate scripts (`read_power.py` vs `read_power_new.py`) to prevent
   Mac/Pi drift and false debugging alarms.
