@@ -8,7 +8,7 @@ How it works
     so a network outage can never stall CSV logging or the UI.
   * A background thread sends the oldest queued reading first, one at a time. Success
     deletes it; a network error or HTTP 5xx keeps it and retries with backoff
-    (5 s doubling to 5 min); a permanent HTTP 4xx drops it (it would never succeed).
+    (5 s doubling to 1 min); a permanent HTTP 4xx drops it (it would never succeed).
   * Every reading gets a stable reading_id, so a retry after an ambiguous timeout
     cannot create a duplicate (the Cloud Function uses it as the document id).
   * The queue is on disk, so readings survive a reboot or power loss.
@@ -45,7 +45,7 @@ import requests
 
 LIVE_MAX_AGE_SEC = 120
 BACKOFF_START_SEC = 5
-BACKOFF_MAX_SEC = 300
+BACKOFF_MAX_SEC = 60   # one retry a minute is no heavier than normal uploads; keeps post-outage recovery under ~1-2 min
 REQUEST_TIMEOUT_SEC = 10
 MAX_QUEUE_ROWS = 100_000          # ~69 days at one reading a minute
 RETRYABLE_4XX = {401, 403, 408, 429}   # 401/403: bad/rotated station key, fixable by an operator

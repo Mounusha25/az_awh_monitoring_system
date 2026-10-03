@@ -1,88 +1,51 @@
 #!/bin/bash
-# Prepare files for Raspberry Pi transfer
-# This creates a clean package with only the files needed on RPi
+# Build a clean package of the files a station needs, from RPi_USB_Package/.
+# Run from the repository root:  ./prepare_for_rpi.sh
+#
+# Both AquaPars scripts import cloud_uploader.py, so it MUST be in the package;
+# the script stops with an error if any listed file is missing.
+set -euo pipefail
 
+SRC="RPi_USB_Package"
 OUTPUT_DIR="AWH_RPi_Package"
 
-echo "Creating RPi package..."
+FILES=(
+  AquaPars1.py            # ASU station (older Prolific power meter)
+  AquaPars1_new_pm.py     # SRP field testbed (DEM730P power meter)
+  cloud_uploader.py       # durable non-blocking uploader (required by both)
+  awh_ui_layout.py
+  pump_controller.py
+  read_balance.py
+  read_power.py
+  read_power_new.py
+  read_flow.py
+  intake_anemometer.py
+  outtake_anemometer.py
+  RASPBERRY_PI_COMMANDS.txt
+)
 
-# Clean previous package
+[ -d "$SRC" ] || { echo "ERROR: run this from the repository root (no $SRC/ here)"; exit 1; }
+
+echo "Creating RPi package..."
 rm -rf "$OUTPUT_DIR"
 mkdir -p "$OUTPUT_DIR"
-mkdir -p "$OUTPUT_DIR/test_system"
 
-# Copy essential system files
-cp AquaPars1.py "$OUTPUT_DIR/"
-cp awh_ui_layout.py "$OUTPUT_DIR/"
-cp pump_controller.py "$OUTPUT_DIR/"
-cp read_balance.py "$OUTPUT_DIR/"
-cp read_power.py "$OUTPUT_DIR/"
-cp read_flow.py "$OUTPUT_DIR/"
-cp intake_anemometer.py "$OUTPUT_DIR/"
-cp outtake_anemometer.py "$OUTPUT_DIR/"
+for f in "${FILES[@]}"; do
+  [ -f "$SRC/$f" ] || { echo "ERROR: missing $SRC/$f"; exit 1; }
+  cp "$SRC/$f" "$OUTPUT_DIR/"
+done
 
-# Copy test files
-cp test_system/test_*.py "$OUTPUT_DIR/test_system/"
+# Sensor test scripts (flat layout, no test_system/ folder). Not the pytest unit tests.
+for t in test_balance test_flow test_pump test_powermeter test_powermeter_new \
+         test_intake_anememoter test_outtaketake_anememoter; do
+  [ -f "$SRC/$t.py" ] && cp "$SRC/$t.py" "$OUTPUT_DIR/"
+done
 
-# Create README for RPi
-cat > "$OUTPUT_DIR/README_RPi.txt" << 'EOF'
-AWH System for Raspberry Pi
-============================
-
-FILES INCLUDED:
----------------
-AquaPars1.py              - Main program (run this!)
-awh_ui_layout.py          - Control panel UI
-pump_controller.py        - Pump control
-read_balance.py           - Weight sensor reader
-read_power.py             - Power meter reader
-read_flow.py              - Flow meter reader
-intake_anemometer.py      - Intake air sensor
-outtake_anemometer.py     - Outtake air sensor
-test_system/              - Individual sensor test files
-
-SETUP ON RASPBERRY PI:
-----------------------
-1. Copy all files to: /home/pi/AWH_System/
-
-2. Install dependencies:
-   pip3 install RPi.GPIO pyserial requests
-
-3. Connect all 5 USB sensors
-
-4. Test each sensor:
-   cd /home/pi/AWH_System/test_system/
-   python3 test_balance.py
-   python3 test_powermeter.py
-   python3 test_flow.py
-   python3 test_intake_anememoter.py
-   python3 test_outtaketake_anememoter.py
-
-5. Run the main system:
-   cd /home/pi/AWH_System/
-   python3 AquaPars1.py
-
-WHAT IT DOES:
--------------
-- Reads 5 sensors every 10 seconds
-- Saves data to CSV files (measure_data/ folder)
-- Uploads to cloud every 60 seconds
-- Controls pump automatically based on weight
-- Shows control panel UI
-
-TROUBLESHOOTING:
-----------------
-- USB permission error: sudo usermod -a -G dialout pi (then reboot)
-- GPIO error: Run with sudo python3 AquaPars1.py
-- No sensors detected: Run lsusb to check connections
-EOF
-
-echo "✅ Package created in: $OUTPUT_DIR/"
+echo "Package created in: $OUTPUT_DIR/"
 echo ""
 echo "NEXT STEPS:"
-echo "1. Copy '$OUTPUT_DIR' folder to USB drive"
-echo "2. Plug USB into Raspberry Pi"
-echo "3. Copy files to /home/pi/AWH_System/"
-echo "4. Open AquaPars1.py in Thonny and run it"
+echo "1. Copy the folder to the Pi (scp -r $OUTPUT_DIR pi@<ip>:~/RPi_USB_Package) or via USB."
+echo "2. Follow guides/SITE_VISIT_CHECKLIST.md (backup, sanity checks, outage test)."
+echo "3. Run from ~/RPi_USB_Package:  python3 AquaPars1.py   (or AquaPars1_new_pm.py)"
 echo ""
 ls -lh "$OUTPUT_DIR/"

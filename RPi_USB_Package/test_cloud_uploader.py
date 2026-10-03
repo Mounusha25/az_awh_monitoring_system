@@ -376,3 +376,27 @@ def test_successful_upload_logs_an_info_line_for_the_operator(tmp_path, caplog):
     up.submit("st1", {"n": 1})
     assert up.attempt_next() == "sent"
     assert "[Cloud Upload] 200 OK" in caplog.text and "0 still queued" in caplog.text
+
+
+def test_retry_backoff_doubles_then_caps_at_one_minute(tmp_path):
+    """After an outage the uploader must notice the network is back within about a minute."""
+    waits = []
+
+    class FakeStop:
+        def is_set(self):
+            return len(waits) >= 8
+
+        def wait(self, seconds):
+            waits.append(seconds)
+
+        def set(self):
+            pass
+
+        def clear(self):
+            pass
+
+    up, _, _ = make(tmp_path, post=FakePost(default=503))
+    up.submit("st1", {"n": 1})
+    up._stop = FakeStop()
+    up._run()
+    assert waits == [5, 10, 20, 40, 60, 60, 60, 60]

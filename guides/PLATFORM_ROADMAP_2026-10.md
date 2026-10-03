@@ -31,12 +31,21 @@
   setup are reproducible.
 
 ### 1.3 Observability and alerting
-- Structured logging; Prometheus/Grafana or Cloud Monitoring; uptime check on `/health`.
+- DONE 2026-10-03: structured request logging in the backend (`logging_config.py`): JSON on Render,
+  request IDs (`X-Request-ID`), one access line per request, no secrets logged.
+- BUILT 2026-10-03: `Monitor` workflow (`.github/workflows/monitor.yml`, `scripts/check_backend.py`):
+  `/health` every 10 min (also keeps the free Render instance awake) and station freshness every 6 h.
+  A manual run passed and the checks were verified against the live backend, BUT **no scheduled run had fired
+  in the first ~2 hours** (GitHub schedules are best-effort and new ones can start late). Verify with
+  `gh run list -R azawhasu-team/AzAWH-Project --event schedule`. If still nothing after ~24 h, use an
+  external pinger instead (UptimeRobot / cron-job.org free tier: GET /health every 5 min, email on failure).
+  Until scheduled runs are confirmed, treat uptime alerting and the keep-alive as NOT in effect.
 - DONE 2026-10-02: GCP billing budget alert ($7/month, alerts at 50/90/100/150%).
   Billing is a paid account (not a trial). A budget alerts on overspend only; it would not
   have caught the 2026-08-05 outage (billing detached) — the Monitor workflow does that.
-- Per-station data-freshness alerts ("station N silent for 30 min"). Currently 8 of
-  9 stations being inactive is only visible if someone looks.
+- Per-station data-freshness alerts: built (see Monitor above) but the watchlist
+  `monitoring/stations.json` is intentionally EMPTY, so nothing is checked yet. As of 2026-10-03 all 9
+  stations are inactive (newest reading 2026-09-29), which is only visible if someone looks.
 
 ### 1.4 Edge (Raspberry Pi) reliability
 - BUILT 2026-10-03 (function DEPLOYED 2026-10-03 and verified with non-writing requests; Pi side not yet
